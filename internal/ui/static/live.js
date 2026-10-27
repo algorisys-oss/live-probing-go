@@ -130,6 +130,8 @@
   }
   function applyLive(f) {
     applyHeader(f);
+    var alertsEl = $("lp-alerts");
+    if (alertsEl && f.alertList !== undefined) alertsEl.innerHTML = f.alertList;
     if (!$("lp-live")) return;
     var red = $("lp-red");
     if (red) red.innerHTML = f.red || "";
@@ -357,6 +359,47 @@
     // Honour a #spanId deep link; otherwise keep the server's default (failing span, else root).
     selectSpan(hasHash ? hash : serverDefault, hasHash && hash !== serverDefault);
   }
+
+  // ---- alerts: "firing for" counts up live ----------------------------------------------
+  function firingFor(sinceMs, now) {
+    var s = Math.max(0, Math.round((now - sinceMs) / 1000));
+    if (s < 60) return s + "s";
+    var m = Math.floor(s / 60);
+    return m < 60 ? m + "m " + (s % 60) + "s" : Math.floor(m / 60) + "h " + (m % 60) + "m";
+  }
+  setInterval(function () {
+    var els = document.querySelectorAll("[data-since]"), now = Date.now();
+    for (var i = 0; i < els.length; i++) els[i].textContent = firingFor(Number(els[i].getAttribute("data-since")), now);
+  }, 1000);
+
+  // ---- flamegraph hover -----------------------------------------------------------------
+  document.addEventListener("mouseover", function (e) {
+    var cell = e.target.closest && e.target.closest(".flame-cell[data-hover]");
+    var wrap = e.target.closest && e.target.closest(".flame-wrap");
+    if (!wrap) return;
+    var out = wrap.querySelector(".flame-hover");
+    if (out) out.textContent = cell ? cell.getAttribute("data-hover") : out.getAttribute("data-default");
+  });
+  document.addEventListener("mouseout", function (e) {
+    var wrap = e.target.closest && e.target.closest(".flame-wrap");
+    if (wrap && !wrap.contains(e.relatedTarget)) {
+      var out = wrap.querySelector(".flame-hover");
+      if (out) out.textContent = out.getAttribute("data-default");
+    }
+  });
+
+  // ---- GET forms: drop empty fields (and the default sort) so URLs stay clean ------------
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (!form.hasAttribute || !form.hasAttribute("data-drop-empty")) return;
+    for (var i = 0; i < form.elements.length; i++) {
+      var el = form.elements[i];
+      if (!el.name) continue;
+      el.value = String(el.value).trim();
+      if (el.value === "" || (el.name === "sort" && el.value === "recent")) el.disabled = true;
+    }
+    setTimeout(function () { for (var j = 0; j < form.elements.length; j++) form.elements[j].disabled = false; }, 0);
+  });
 
   // ---- filter select → navigate (view state lives in the URL) ---------------------------
   document.addEventListener("change", function (e) {

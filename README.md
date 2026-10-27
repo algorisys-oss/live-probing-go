@@ -17,7 +17,7 @@ stream with per-trace sequence data, aggregate topology, per-service RED metrics
 | Server: ingest, REST, `/ws`, CORS/origin policy, alert webhook | **done**, every route identical to TS server |
 | History: SQLite by UTC day, search, retention                 | **done**, reads databases the TS server wrote |
 | Collector: http / stdin / RabbitMQ sources, adapters          | **done**, adapters identical to TS under 20k-input fuzz |
-| UI: server-rendered Go (templ, server-built SVG, SSE live fragments) | **in progress**: live + trace pages done |
+| UI: server-rendered Go (templ, server-built SVG, SSE live fragments) | **done** (all pages); Go browser e2e next |
 | Shopwave testbed in Go                                        | Phase 6                                      |
 | Docker image, run scripts, deploy                             | Phase 7                                      |
 
@@ -68,12 +68,12 @@ server; see [../live-probing/docs/integrating-your-app.md](../live-probing/docs/
 
 ### UI
 
-Open `http://localhost:4319`. The UI is rendered by the Go binary (no Node, no build step): the
-live view (trace feed, RED tiles, health-coloured flow graph ⇄ dependency matrix) and the trace page
-(waterfall with critical path, sequence diagram with N+1 grouping) are done; the history, day,
-search, errors, alerts, service and compare pages are still being ported.
+Open `http://localhost:4319`. The whole UI is rendered by the Go binary (no Node, no build step):
+live view (trace feed, RED tiles, health-coloured flow graph ⇄ dependency matrix), trace page
+(waterfall with critical path, sequence diagram with N+1 grouping), history and day pages (throughput,
+latency, histogram, heatmap, flamegraph), search, errors, alerts, service and compare.
 
-Until they are, the Go server can host the existing React UI instead:
+For side-by-side comparison during the migration, the Go server can still host the React UI:
 
 ```bash
 (cd ../live-probing && npm ci && npm run build -w @liveprobe/ui)

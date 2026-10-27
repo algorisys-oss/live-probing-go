@@ -1,0 +1,611 @@
+package ui
+
+import (
+	"liveprobe/internal/core"
+	"liveprobe/internal/history"
+	"liveprobe/internal/ui/view"
+	"net/url"
+)
+
+func pathEscape(s string) string  { return url.PathEscape(s) }
+func queryEscape(s string) string { return url.QueryEscape(s) }
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// summaryRows is the trace-row list shared by search, the day page's slowest traces, and errors.
+templ summaryRow(t core.TraceSummary, linkClass string) {
+	<li class="trace-row">
+		<a class={ linkClass } href={ templ.SafeURL(traceHref(t.TraceID)) }>
+			<div class="trace-row-top">
+				<span class="trace-op" title={ t.RootOperation }>{ t.RootOperation }</span>
+				if t.HasError {
+					<span class="dot dot-error" title="error"></span>
+				}
+			</div>
+			<div class="trace-row-meta">
+				<span>{ view.Itoa(len(t.Services)) } svc</span>
+				<span>·</span>
+				<span>{ view.Itoa(t.SpanCount) } spans</span>
+				<span>·</span>
+				<span>{ view.Micros(t.DurationMicros) }</span>
+			</div>
+		</a>
+	</li>
+}
+
+// --- alerts --------------------------------------------------------------------------------
+
+templ alertsPageView(h headerState, rows []alertRow) {
+	@page("LiveProbe · alerts", h, pageStream("alerts")) {
+		<div class="page alerts-page">
+			<h1 class="page-title">Alerts</h1>
+			<div id="lp-alerts">
+				@alertList(rows)
+			</div>
+		</div>
+	}
+}
+
+templ alertList(rows []alertRow) {
+	if len(rows) == 0 {
+		<div class="muted">No active alerts — all services within thresholds. 🎉</div>
+	} else {
+		<ul class="alert-list">
+			for _, a := range rows {
+				<li class={ "alert-row alert-row-" + a.Severity }>
+					<span class={ "alert-dot alert-dot-" + a.Severity }></span>
+					<div class="alert-body">
+						<div class="alert-msg">{ a.Message }</div>
+						<div class="alert-meta">
+							<span class="alert-metric">{ a.Metric }</span>
+							<span>firing <span data-since={ a.Since }>{ a.Firing }</span></span>
+							if a.ServiceHref != "" {
+								<a class="link" href={ templ.SafeURL(a.ServiceHref) }>{ a.Service } →</a>
+							}
+						</div>
+					</div>
+				</li>
+			}
+		</ul>
+	}
+}
+
+// --- errors --------------------------------------------------------------------------------
+
+templ errorsPageView(h headerState, groups []history.ErrorGroup, errMsg string) {
+	@page("LiveProbe · errors", h, pageStream("errors")) {
+		<div class="page errors-page">
+			<h1 class="page-title">Errors</h1>
+			if errMsg != "" {
+				<div class="error-msg">{ errMsg }</div>
+			} else if len(groups) == 0 {
+				<div class="muted">No errored traces recorded. 🎉</div>
+			} else {
+				<table class="data-table errors-table">
+					<thead>
+						<tr>
+							<th>Endpoint</th>
+							<th>Error</th>
+							<th class="num">Count</th>
+							<th class="num">Last seen</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, g := range groups {
+							<tr>
+								<td class="mono">{ g.Endpoint }</td>
+								<td><span class="err-label">{ g.Label }</span></td>
+								<td class="num">{ view.Itoa(g.Count) }</td>
+								<td class="num muted">{ timeOfDay(g.LastSeen) }</td>
+								<td class="num"><a class="link" href={ templ.SafeURL(traceHref(g.SampleTraceID)) }>view trace →</a></td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}
+
+// --- search --------------------------------------------------------------------------------
+
+templ searchPageView(h headerState, f searchForm, services []string, results []core.TraceSummary, errMsg string) {
+	@page("LiveProbe · search", h, pageStream("search")) {
+		<div class="page search-page">
+			<h1 class="page-title">Search traces</h1>
+			<form class="search-form" action="/search" method="get" data-drop-empty>
+				<input class="search-input" name="q" placeholder="endpoint contains… (e.g. /checkout)" value={ f.Q }/>
+				<input class="search-input" name="service" placeholder="service (e.g. payment-worker)" list="known-services" value={ f.Service }/>
+				<datalist id="known-services">
+					for _, s := range services {
+						<option value={ s }></option>
+					}
+				</datalist>
+				<input class="search-input search-input-wide" name="attr" placeholder="attribute: key=value or value (e.g. http.status_code=500)" value={ f.Attr }/>
+				<select class="search-input" name="error">
+					<option value="" selected?={ f.Error == "" }>any status</option>
+					<option value="true" selected?={ f.Error == "true" }>errors only</option>
+					<option value="false" selected?={ f.Error == "false" }>no errors</option>
+				</select>
+				<input class="search-input search-input-num" name="minMs" type="number" min="0" placeholder="min ms" value={ f.MinMs }/>
+				<input class="search-input search-input-num" name="maxMs" type="number" min="0" placeholder="max ms" value={ f.MaxMs }/>
+				<input class="search-input search-input-num" name="minSpans" type="number" min="0" placeholder="min spans" value={ f.MinSpans }/>
+				<select class="search-input" name="sort" title="Sort order">
+					<option value="recent" selected?={ f.Sort == "recent" }>newest first</option>
+					<option value="slowest" selected?={ f.Sort == "slowest" }>slowest first</option>
+				</select>
+				<button type="submit" class="btn btn-accent">Search</button>
+			</form>
+			if !f.hasQuery() {
+				<div class="muted">Enter a filter above to search all recorded traces.</div>
+			} else if errMsg != "" {
+				<div class="error-msg">{ errMsg }</div>
+			} else {
+				<div class="muted search-count">{ view.Itoa(len(results)) } { plural(len(results), "result", "results") }</div>
+				if len(results) == 0 {
+					<div class="muted">No traces match those filters.</div>
+				} else {
+					<ul class="trace-list search-results">
+						for _, t := range results {
+							@summaryRow(t, "trace-row-link")
+						}
+					</ul>
+				}
+			}
+		</div>
+	}
+}
+
+// --- history -------------------------------------------------------------------------------
+
+templ historyPageView(h headerState, days []history.DayInfo, trends trendsChart, errMsg string) {
+	@page("LiveProbe · history", h, pageStream("history")) {
+		<div class="history-page">
+			<div class="history-head">
+				<h1 class="page-title">History</h1>
+			</div>
+			if errMsg != "" {
+				<div class="empty-hint error-text">Failed to load: { errMsg }</div>
+			} else if len(days) == 0 {
+				<div class="empty-hint">No history yet.</div>
+			} else {
+				<div class="chart-card trends-card">
+					<svg class="trends-chart" viewBox="0 0 820 200" preserveAspectRatio="xMidYMid meet">
+						<line class="axis" x1="56" y1={ trends.BaseY } x2="806" y2={ trends.BaseY }></line>
+						<text class="axis-label" x="50" y={ trends.MaxY } text-anchor="end">{ trends.MaxLabel }</text>
+						<text class="axis-label" x="50" y={ trends.BaseY } text-anchor="end">0</text>
+						for _, b := range trends.Bars {
+							<g>
+								<title>{ b.Title }</title>
+								<rect class="trend-bar" x={ b.X } y={ b.Y } width={ b.W } height={ b.H }></rect>
+								if b.HasErr {
+									<rect class="trend-bar-err" x={ b.X } y={ b.ErrY } width={ b.W } height={ b.ErrH }></rect>
+								}
+								<text class="axis-label" x={ b.LabelX } y="188" text-anchor="middle">{ b.Label }</text>
+							</g>
+						}
+					</svg>
+				</div>
+				<div class="day-table-wrap">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th>Day</th>
+								<th class="num">Requests</th>
+								<th class="num">Errors</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, d := range days {
+								<tr>
+									<td><a href={ templ.SafeURL("/day/" + pathEscape(d.Day)) } class="day-link">{ d.Day }</a></td>
+									<td class="num">{ grouped(d.Requests) }</td>
+									<td class={ errNumClass(d.Errors) }>{ grouped(d.Errors) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		</div>
+	}
+}
+
+func errNumClass(n int) string {
+	if n > 0 {
+		return "num error-text"
+	}
+	return "num"
+}
+
+// --- day -----------------------------------------------------------------------------------
+
+templ rollupCard(label, value string) {
+	<div class="rollup-card">
+		<div class="rollup-value">{ value }</div>
+		<div class="rollup-label">{ label }</div>
+	</div>
+}
+
+templ dayPageView(d dayData) {
+	@page("LiveProbe · "+d.Summary.Day, d.Header, pageStream("history")) {
+		<div class="day-page">
+			<div class="trace-page-bar">
+				<a href="/history" class="back-link">← History</a>
+			</div>
+			if d.Err != "" {
+				<div class="empty-hint error-text">Failed to load: { d.Err }</div>
+			} else {
+				<div class="day-scroll">
+					<h1 class="page-title">{ d.Summary.Day }</h1>
+					<div class="rollup-grid">
+						@rollupCard("Requests", grouped(d.Summary.Requests))
+						@rollupCard("Error rate", core.ToFixed(d.Summary.ErrorRate*100, 1)+"%")
+						@rollupCard("p50", view.Micros(d.Summary.P50Micros))
+						@rollupCard("p95", view.Micros(d.Summary.P95Micros))
+						@rollupCard("p99", view.Micros(d.Summary.P99Micros))
+					</div>
+					<section class="day-section">
+						<h2 class="section-title">Throughput</h2>
+						<div class="chart-card">
+							@throughputSVG(d.Throughput)
+						</div>
+					</section>
+					<section class="day-section">
+						<h2 class="section-title">Top endpoints</h2>
+						if len(d.Endpoints) == 0 {
+							<div class="empty-hint">No endpoints.</div>
+						} else {
+							<div class="day-table-wrap">
+								<table class="data-table">
+									<thead>
+										<tr>
+											<th>Operation</th>
+											<th class="num">Calls</th>
+											<th class="num">Errors</th>
+											<th class="num">Avg</th>
+											<th class="num">Max</th>
+										</tr>
+									</thead>
+									<tbody>
+										for _, e := range d.Endpoints {
+											<tr class={ e.Class } data-href={ e.Href }>
+												<td class="op-cell" title={ e.Operation }>{ e.Operation }</td>
+												<td class="num">{ e.Calls }</td>
+												<td class={ e.ErrClass }>{ e.Errors }</td>
+												<td class="num">{ e.Avg }</td>
+												<td class="num">{ e.Max }</td>
+											</tr>
+										}
+									</tbody>
+								</table>
+							</div>
+						}
+					</section>
+					<section class="day-section" id="latency">
+						<h2 class="section-title">Latency over time</h2>
+						if d.Endpoint == "" {
+							<div class="muted">Click an endpoint above to see its p50 / p95 / p99 over the day.</div>
+						} else if d.Latency.Empty {
+							<div class="muted">No latency data for { d.Endpoint } on this day.</div>
+						} else {
+							<div class="chart-card">
+								@latencySVG(d.Latency, d.Endpoint)
+							</div>
+						}
+					</section>
+					if d.Endpoint != "" {
+						<section class="day-section">
+							<h2 class="section-title">Latency distribution — { d.Endpoint }</h2>
+							<div class="chart-card">
+								<div class="chart-subtitle">Distribution (how requests spread across latency)</div>
+								@histogramSVG(d.Histogram)
+								<div class="chart-subtitle chart-subtitle-spaced">Heatmap over time (slowest on top — a rising band is a regression)</div>
+								@heatmapSVG(d.Heatmap)
+							</div>
+						</section>
+						if !d.Flame.Empty {
+							<section class="day-section">
+								<h2 class="section-title">Where time goes — { d.Endpoint }</h2>
+								<div class="chart-card">
+									<div class="chart-subtitle">Aggregate flamegraph over the endpoint's recent traces (width = share of time)</div>
+									@flameSVG(d.Flame)
+								</div>
+							</section>
+						}
+					}
+					<section class="day-section">
+						<h2 class="section-title">Slowest traces</h2>
+						if len(d.Summary.Slowest) == 0 {
+							<div class="empty-hint">No traces.</div>
+						} else {
+							<ul class="trace-list day-trace-list">
+								for _, t := range d.Summary.Slowest {
+									@summaryRow(t, "day-trace-link")
+								}
+							</ul>
+						}
+					</section>
+				</div>
+			}
+		</div>
+	}
+}
+
+templ throughputSVG(c throughputChart) {
+	if c.Empty {
+		<div class="empty-hint">No throughput data.</div>
+	} else {
+		<svg class="throughput-svg" viewBox="0 0 720 180" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Requests per minute">
+			<text class="chart-axis-label" x="34" y={ c.MaxY }>{ c.MaxCount }</text>
+			<text class="chart-axis-label" x="34" y={ c.BaseY }>0</text>
+			<line class="chart-baseline" x1="40" y1={ c.BaseY } x2={ c.BaselineRight } y2={ c.BaseY }></line>
+			for _, b := range c.Bars {
+				<g>
+					<rect class="chart-bar" x={ b.X } y={ b.Y } width={ b.W } height={ b.H }>
+						<title>{ b.Title }</title>
+					</rect>
+					if b.HasErr {
+						<rect class="chart-bar-error" x={ b.X } y={ b.ErrY } width={ b.W } height={ b.ErrH }></rect>
+					}
+				</g>
+			}
+			for _, t := range c.Ticks {
+				<text class="chart-tick" x={ t.X } y="172" text-anchor="middle">{ t.Label }</text>
+			}
+		</svg>
+	}
+}
+
+templ latencySVG(c latencyChart, endpoint string) {
+	<div class="latency-chart-wrap">
+		<div class="latency-legend">
+			<span class="lg lg-p50">p50</span>
+			<span class="lg lg-p95">p95</span>
+			<span class="lg lg-p99">p99</span>
+			<span class="muted latency-endpoint">{ endpoint }</span>
+		</div>
+		<svg class="latency-chart" viewBox="0 0 820 220" preserveAspectRatio="xMidYMid meet">
+			<line class="axis" x1={ c.AxisLeft } y1="14" x2={ c.AxisLeft } y2={ c.AxisBottom }></line>
+			<line class="axis" x1={ c.AxisLeft } y1={ c.AxisBottom } x2={ c.Right } y2={ c.AxisBottom }></line>
+			<text class="axis-label" x="46" y={ c.MaxY } text-anchor="end">{ c.MaxLabel }</text>
+			<text class="axis-label" x="46" y={ c.ZeroY } text-anchor="end">0</text>
+			<text class="axis-label" x={ c.FirstX } y="208" text-anchor="middle">{ c.First }</text>
+			<text class="axis-label" x={ c.LastX } y="208" text-anchor="middle">{ c.Last }</text>
+			<path class="lat-line lat-p99" d={ c.P99 }></path>
+			<path class="lat-line lat-p95" d={ c.P95 }></path>
+			<path class="lat-line lat-p50" d={ c.P50 }></path>
+		</svg>
+	</div>
+}
+
+templ histogramSVG(c histogramChart) {
+	if c.Empty {
+		<div class="muted">No requests to distribute.</div>
+	} else {
+		<svg class="lat-hist" viewBox="0 0 820 200" preserveAspectRatio="xMidYMid meet">
+			<line class="axis" x1={ c.Left } y1={ c.Top } x2={ c.Left } y2={ c.Bottom }></line>
+			<line class="axis" x1={ c.Left } y1={ c.Bottom } x2={ c.Right } y2={ c.Bottom }></line>
+			<text class="axis-label" x="38" y={ c.MaxY } text-anchor="end">{ c.MaxLabel }</text>
+			<text class="axis-label" x="38" y={ c.ZeroY } text-anchor="end">0</text>
+			for _, b := range c.Bars {
+				<g class="lat-hist-bar">
+					<rect x={ b.X } y={ b.Y } width={ b.W } height={ b.H }>
+						<title>{ b.Title }</title>
+					</rect>
+					if b.ShowCount {
+						<text class="lat-hist-count" x={ b.CountX } y={ b.CountY } text-anchor="middle">{ b.Count }</text>
+					}
+					<text class="lat-hist-label" x={ b.LabelX } y={ b.LabelY } text-anchor="end" transform={ b.Transform }>{ b.Label }</text>
+				</g>
+			}
+		</svg>
+	}
+}
+
+templ heatmapSVG(c heatmapChart) {
+	if c.Empty {
+		<div class="muted">No requests to plot.</div>
+	} else {
+		<svg class="lat-heatmap" viewBox={ "0 0 820 " + c.H } preserveAspectRatio="xMidYMid meet">
+			for _, l := range c.YLabels {
+				<text class="axis-label" x="60" y={ l.Y } text-anchor="end">{ l.Label }</text>
+			}
+			for _, cell := range c.Cells {
+				<rect class="heat-cell" x={ cell.X } y={ cell.Y } width={ cell.W } height={ cell.H } style={ cell.Style }>
+					<title>{ cell.Title }</title>
+				</rect>
+			}
+			<text class="axis-label" x={ c.FirstX } y={ c.LabelY } text-anchor="middle">{ c.First }</text>
+			<text class="axis-label" x={ c.LastX } y={ c.LabelY } text-anchor="middle">{ c.Last }</text>
+		</svg>
+	}
+}
+
+const flameHint = "Hover a block: width = share of total time; the uncovered right of a bar is its self time."
+
+templ flameSVG(f flamegraph) {
+	<div class="flame-wrap">
+		<svg class="flame" viewBox={ "0 0 820 " + f.H } preserveAspectRatio="xMidYMid meet">
+			for _, c := range f.Cells {
+				<g class="flame-cell" data-hover={ c.Hover }>
+					<rect class={ c.Class } x={ c.X } y={ c.Y } width={ c.W } height="21" rx="2">
+						<title>{ c.Title }</title>
+					</rect>
+					if c.ShowLabel {
+						<text class="flame-label" x={ c.LabelX } y={ c.LabelY }>{ c.Label }</text>
+					}
+				</g>
+			}
+		</svg>
+		<div class="flame-hover muted" data-default={ flameHint }>{ flameHint }</div>
+	</div>
+}
+
+// --- service -------------------------------------------------------------------------------
+
+templ serviceDeps(label string, names []string) {
+	<div class="svc-deps">
+		<span class="svc-deps-label">{ label }</span>
+		if len(names) == 0 {
+			<span class="muted">none</span>
+		} else {
+			for _, n := range names {
+				<a href={ templ.SafeURL(serviceHref(n)) } class="chip chip-link">{ n }</a>
+			}
+		}
+	</div>
+}
+
+templ servicePageView(h headerState, name string, svc core.ServiceDetail) {
+	@page("LiveProbe · "+name, h, pageStream("service")) {
+		<div class="page service-page">
+			<div class="trace-page-bar">
+				<a href="/" class="back-link">← Live</a>
+			</div>
+			<h1 class="page-title mono">{ name }</h1>
+			<div class="cards">
+				<div class="card">
+					<div class="card-value">{ view.Itoa(svc.Spans) }</div>
+					<div class="card-label">Spans (live window)</div>
+				</div>
+				<div class="card">
+					<div class="card-value">{ core.ToFixed(svc.ErrorRate*100, 1) }%</div>
+					<div class="card-label">Error rate</div>
+				</div>
+				<div class="card">
+					<div class="card-value">{ view.Itoa(svc.Errors) }</div>
+					<div class="card-label">Errored spans</div>
+				</div>
+			</div>
+			@serviceDeps("calls in from", svc.Inbound)
+			@serviceDeps("calls out to", svc.Outbound)
+			<h2 class="section-title">Operations</h2>
+			if len(svc.Operations) == 0 {
+				<div class="muted">No operations observed in the live window.</div>
+			} else {
+				<table class="data-table">
+					<thead>
+						<tr>
+							<th>Operation</th>
+							<th class="num">Calls</th>
+							<th class="num">Errors</th>
+							<th class="num">Avg</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, o := range svc.Operations {
+							<tr>
+								<td class="mono">{ o.Operation }</td>
+								<td class="num">{ view.Itoa(o.Calls) }</td>
+								<td class={ errTextClass(o.Errors) }>{ view.Itoa(o.Errors) }</td>
+								<td class="num muted">{ view.Micros(o.AvgMicros) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}
+
+func errTextClass(n int) string {
+	if n > 0 {
+		return "num err-text"
+	}
+	return "num"
+}
+
+// --- compare -------------------------------------------------------------------------------
+
+templ compareHead(d *core.TraceDetail, label string) {
+	<div class="cmp-head">
+		<span class="cmp-badge">{ label }</span>
+		<span class="mono cmp-op">{ d.Summary.RootOperation }</span>
+		<span class="muted">{ view.Itoa(len(d.Summary.Services)) } svc · { view.Itoa(d.Summary.SpanCount) } spans · { view.Micros(d.Summary.DurationMicros) }</span>
+		if d.Summary.HasError {
+			<span class="badge badge-error">error</span>
+		}
+	</div>
+}
+
+templ comparePageView(d compareData) {
+	@page("LiveProbe · compare", d.Header, pageStream("compare")) {
+		<div class="page compare-page">
+			<div class="trace-page-bar">
+				<a href="/" class="back-link">← Live</a>
+			</div>
+			<h1 class="page-title">Compare traces</h1>
+			<form class="search-form" action="/compare" method="get" data-drop-empty>
+				<input class="search-input search-input-wide" name="a" list="recent-traces" placeholder="trace A id" value={ d.A }/>
+				<input class="search-input search-input-wide" name="b" list="recent-traces" placeholder="trace B id" value={ d.B }/>
+				<datalist id="recent-traces">
+					for _, t := range d.Recent {
+						<option value={ t.TraceID }>{ t.RootOperation }</option>
+					}
+				</datalist>
+				<button class="btn btn-accent" type="submit">Compare</button>
+			</form>
+			if d.Err != "" {
+				<div class="error-msg">{ d.Err }</div>
+			}
+			if d.A == "" && d.B == "" {
+				<div class="muted">Pick two traces (paste ids or choose from recent) to diff their structure and timing.</div>
+			}
+			if d.HasEither {
+				<div class="cmp-summaries">
+					<div class="cmp-col">
+						if d.DA != nil {
+							@compareHead(d.DA, "A")
+						} else {
+							<div class="muted">{ missingLabel(d.A, "A") }</div>
+						}
+					</div>
+					<div class="cmp-col">
+						if d.DB != nil {
+							@compareHead(d.DB, "B")
+						} else {
+							<div class="muted">{ missingLabel(d.B, "B") }</div>
+						}
+					</div>
+				</div>
+			}
+			if len(d.Diff) > 0 {
+				<h2 class="section-title">Operation timing (total duration per operation)</h2>
+				<table class="data-table cmp-table">
+					<thead>
+						<tr>
+							<th>Operation</th>
+							<th class="num">A</th>
+							<th class="num">B</th>
+							<th class="num">Δ (B−A)</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, r := range d.Diff {
+							<tr>
+								<td class="mono">{ r.Key }</td>
+								<td class="num">{ r.A }</td>
+								<td class="num">{ r.B }</td>
+								<td class={ r.DeltaClass }>{ r.Delta }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+	}
+}
+
+func missingLabel(id, slot string) string {
+	if id == "" {
+		return "pick trace " + slot
+	}
+	return "trace " + slot + " not found"
+}

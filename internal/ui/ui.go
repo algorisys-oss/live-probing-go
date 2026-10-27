@@ -64,6 +64,13 @@ func Handler(b Backend) http.Handler {
 	})
 	mux.HandleFunc("GET /ui/live", liveStream(b))
 	mux.HandleFunc("GET /trace/{id}", tracePage(b))
+	mux.HandleFunc("GET /alerts", alertsPage(b))
+	mux.HandleFunc("GET /errors", errorsPage(b))
+	mux.HandleFunc("GET /search", searchPage(b))
+	mux.HandleFunc("GET /history", historyPage(b))
+	mux.HandleFunc("GET /day/{date}", dayPage(b))
+	mux.HandleFunc("GET /service/{name}", servicePage(b))
+	mux.HandleFunc("GET /compare", comparePage(b))
 	mux.HandleFunc("GET /ui/trace/{id}/span/{span}", spanFragment(b))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		render(w, r, livePage(b, liveParamsFrom(r.URL.Query())))

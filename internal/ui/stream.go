@@ -34,6 +34,8 @@ type liveFragments struct {
 	FlowEmpty     bool   `json:"flowEmpty"`
 	Mermaid       string `json:"mermaid,omitempty"`
 	Matrix        string `json:"matrix,omitempty"`
+	// Alerts page only:
+	AlertList string `json:"alertList,omitempty"`
 }
 
 const maxListedTraces = 200 // the live list's cap, as in the React store
@@ -48,9 +50,12 @@ func rows(ctx context.Context, ts []core.TraceSummary, service string) []rowFrag
 	return out
 }
 
-func fragments(ctx context.Context, st LiveState, p liveParams, onLive bool, traceCount int) liveFragments {
+func fragments(ctx context.Context, st LiveState, p liveParams, page string, traceCount int) liveFragments {
 	f := liveFragments{Services: len(st.Topology.Nodes), Traces: traceCount, Alerts: len(st.Alerts), AlertSeverity: alertSeverity(st.Alerts)}
-	if !onLive {
+	if page == "alerts" {
+		f.AlertList = renderString(ctx, alertList(alertRows(st.Alerts, time.Now().UnixMilli())))
+	}
+	if page != "live" {
 		return f
 	}
 	f.Red = renderString(ctx, redTiles(st.Red))
@@ -72,7 +77,8 @@ func liveStream(b Backend) http.HandlerFunc {
 			return
 		}
 		q := r.URL.Query()
-		p, onLive := liveParamsFrom(q), q.Get("page") == "live"
+		p, page := liveParamsFrom(q), q.Get("page")
+		onLive := page == "live"
 		ctx := r.Context()
 
 		w.Header().Set("content-type", "text/event-stream")
@@ -96,7 +102,7 @@ func liveStream(b Backend) http.HandlerFunc {
 
 		recent := b.RecentTraces(maxListedTraces)
 		traceCount := len(recent)
-		reset := map[string]any{"live": fragments(ctx, b.LiveState(), p, onLive, traceCount)}
+		reset := map[string]any{"live": fragments(ctx, b.LiveState(), p, page, traceCount)}
 		if onLive {
 			reset["rows"] = rows(ctx, recent[:min(100, len(recent))], p.Service)
 		}
@@ -136,7 +142,7 @@ func liveStream(b Backend) http.HandlerFunc {
 						}
 					}
 				}
-				if ev.Live != nil && !send("live", fragments(ctx, *ev.Live, p, onLive, traceCount)) {
+				if ev.Live != nil && !send("live", fragments(ctx, *ev.Live, p, page, traceCount)) {
 					return
 				}
 			}

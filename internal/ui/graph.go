@@ -316,3 +316,5 @@ func buildMatrix(full core.Topology, p liveParams) matrixGraph {
 	}
 	return mg
 }
+
+func utf16Units(s string) []uint16 { return utf16.Encode([]rune(s)) }

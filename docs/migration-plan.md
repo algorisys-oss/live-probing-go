@@ -61,6 +61,10 @@ live client, no framework). Everything that *runs on a server or is authored as 
     **HTTP 404** with the not-found page (the SPA answered 200).
 12. **Header trace counter** shows the live window's recent traces (≤ 200) server-side; React counted the
     summaries its store had seen (≤ 200). Same number in steady state.
+13. **Number grouping is en-US** (`6,549`). React used `toLocaleString()`, i.e. the *viewer's* locale (an
+    en-IN browser showed `6,549` too but `1,23,456` for larger numbers); a server-rendered page can't know it.
+14. **Endpoint selection on the day page is a navigation** (`?endpoint=…#latency`), not an in-place
+    fetch; the anchor scrolls the charts into view.
 
 ## Phases
 
@@ -145,11 +149,14 @@ Design (decided 2026-10-27):
 - [x] trace page: waterfall (self-time, critical path, collapse), span detail (ICU attribute order),
       sequence diagram (activations, N+1 groups expand/collapse), deep-link selection, copy mermaid,
       not-found — 16 browser checks; side-by-side screenshots match the React UI
-- [ ] history, day (throughput/latency charts, histogram, heatmap, flamegraph), search, errors, alerts,
-      service, compare pages
+- [x] history (trends), day (rollups, throughput, top endpoints → `?endpoint=` latency / histogram /
+      heatmap / flamegraph, slowest), search, errors, alerts (live list, ticking timers), service, compare —
+      **all 866 chart shapes identical to React** (attribute-by-attribute on real data), day pages' rendered
+      text identical, 24 browser checks; Go page tests against a real in-memory store
 - [ ] e2e as Go tests (decision: `chromedp`, gated on a Chrome binary) covering `e2e/*.spec.ts` + the
       scratch checks above
-- [ ] remove `PUBLIC_DIR` once every page is ported
+- [x] every page ported. `PUBLIC_DIR` stays until cutover: it is how the React UI is served for
+      side-by-side checks (removal moved to Phase 7)
 
 ### Phase 6 — testbed in Go (`testbed/`)
 - [ ] shared lib (OTel Go SDK setup, chaos + resilient fetch, pg/redis/amqp helpers) with tests
@@ -164,4 +171,5 @@ Design (decided 2026-10-27):
       unchanged; `--watch` rebuild/restart; pid-file based stop
 - [ ] `serve.sh` equivalent; `deploy` as a Go command
 - [ ] docs ported (README, architecture, integrating-your-app)
+- [ ] remove `PUBLIC_DIR` (React-UI hosting, kept for side-by-side checks until cutover)
 - [ ] parity sign-off against this checklist; TS tree archived
