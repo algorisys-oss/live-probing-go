@@ -14,6 +14,7 @@ current state. Start there.
 ```
 cmd/liveprobe/             server binary (ingest + API + WS + UI)            [phase 2]
 cmd/liveprobe-collector/   collector binary                                   [phase 4]
+cmd/liveprobe-loadgen/     synthetic traffic for development (dev-start.sh)
 internal/core/             event model, window, projections, masking, export  [phase 1]
 internal/server/           HTTP/WS server                                     [phase 2]
 internal/history/          SQLite history store                               [phase 3]
@@ -36,6 +37,8 @@ Do not scaffold empty directories ahead of the code that fills them.
 
 ## Commands
 
+- `./dev-start.sh [--watch] [--testbed [--chaos]] [--no-load] [--fresh]` — build + run on :4319 with traffic;
+  `./dev-stop.sh [--wipe]` stops it (pid files in `.dev/`, never pattern kills).
 - `go test -race ./...` — all tests. `go vet ./...` — lint.
 - `go build -o liveprobe ./cmd/liveprobe && ./liveprobe` — server (env: see `cmd/liveprobe/main.go`).
 - `go generate ./internal/ui` — regenerate templ output after editing `*.templ` (commit the `*_templ.go`).

@@ -1,3 +1,4 @@
 /liveprobe
 /liveprobe-collector
 *.db
+/.dev/

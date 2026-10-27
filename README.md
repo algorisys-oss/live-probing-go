@@ -28,6 +28,22 @@ state is in [HANDOFF.md](HANDOFF.md).
 
 Requires Go 1.26+. There is no cgo; SQLite is the pure-Go `modernc.org/sqlite`.
 
+The fastest way to see it working:
+
+```bash
+./dev-start.sh            # build + run on :4319 with synthetic traffic → open http://localhost:4319
+./dev-start.sh --watch    # same, rebuilding + restarting on every .go / .templ / static change
+./dev-start.sh --testbed  # real traffic from the Shopwave Docker testbed in ../live-probing (add --chaos for failures)
+./dev-stop.sh             # stop everything (--wipe also deletes .dev/data and the testbed volumes)
+```
+
+`dev-start.sh` keeps its binaries, logs, pids and history DB under `.dev/` (gitignored); `--fresh`
+keeps history in memory, `--no-load` skips traffic. The synthetic traffic comes from
+`cmd/liveprobe-loadgen` (`TRACES_PER_SEC`, `ERROR_RATE`, `DURATION_SECONDS`): checkout with an N+1
+query and a flaky order service, cached product browsing, and logins.
+
+To run the server by hand:
+
 ```bash
 go build -o liveprobe ./cmd/liveprobe
 PORT=4319 ./liveprobe          # history goes to ./data/liveprobe.db
@@ -136,6 +152,8 @@ The wire format is identical to the TS server, so existing clients work unchange
 ```
 cmd/liveprobe/        server binary
 cmd/liveprobe-collector/  collector binary (sources + adapters → /v1/events)
+cmd/liveprobe-loadgen/    synthetic multi-service traffic for development
+dev-start.sh / dev-stop.sh  dev runner (synthetic traffic or the Docker testbed, optional watch mode)
 internal/core/        event model and every pure projection of it (stdlib only)
 internal/history/     SQLite history store (same schema as TS)
 internal/server/      HTTP + WebSocket server, alert webhook

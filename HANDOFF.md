@@ -19,6 +19,8 @@ to it — same workflow as `live-probing`'s CONTRIBUTING.md).
 - 144 Go tests, race-clean.
 
 ## How to run / verify
+- **`./dev-start.sh`** (synthetic traffic) or **`./dev-start.sh --watch`**, open http://localhost:4319;
+  `./dev-stop.sh` to stop. `--testbed` uses the Docker testbed from `../live-probing`.
 - `go test -race ./...` · `go vet ./...` · `go generate ./internal/ui` after editing `*.templ`.
 - `go build -o liveprobe ./cmd/liveprobe && PORT=4319 DB_PATH=:memory: ./liveprobe`, open http://localhost:4319.
 - Browser checks used so far live in the session scratchpad (Playwright, headless Chrome); they become

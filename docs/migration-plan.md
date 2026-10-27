@@ -159,6 +159,9 @@ Design (decided 2026-10-27):
 
 ### Phase 7 — packaging + cutover
 - [ ] multi-stage Dockerfile → distroless static image; healthcheck via the binary
-- [ ] `dev-start.sh`, `dev-stop.sh`, `serve.sh` equivalents; `deploy` as a Go command
+- [x] `dev-start.sh` / `dev-stop.sh` (pulled forward to Phase 5 so the UI can be tried): synthetic traffic
+      via `cmd/liveprobe-loadgen`, or the TS Docker testbed (`--testbed`, `--chaos`) feeding the Go server
+      unchanged; `--watch` rebuild/restart; pid-file based stop
+- [ ] `serve.sh` equivalent; `deploy` as a Go command
 - [ ] docs ported (README, architecture, integrating-your-app)
 - [ ] parity sign-off against this checklist; TS tree archived
