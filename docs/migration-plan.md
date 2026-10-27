@@ -126,7 +126,7 @@ Oracle: `sources/*.test.ts`, `adapters/*.test.ts`.
       The fuzz found and fixed 3 real divergences (JS `String(1e21)`, `Number("0x10")`, int64 overflow) —
       `core.ParseJSNumber`/`FormatJSNumber` now implement the ECMAScript algorithms for all of ingest.
 
-### Phase 5 — UI (server-rendered, `internal/ui`) — in progress
+### Phase 5 — UI (server-rendered, `internal/ui`) ✅
 Oracle: the TS UI behaviour + `e2e/*.spec.ts`, `ui/src/lib/*.test.ts`.
 
 Design (decided 2026-10-27):
@@ -153,8 +153,11 @@ Design (decided 2026-10-27):
       heatmap / flamegraph, slowest), search, errors, alerts (live list, ticking timers), service, compare —
       **all 866 chart shapes identical to React** (attribute-by-attribute on real data), day pages' rendered
       text identical, 24 browser checks; Go page tests against a real in-memory store
-- [ ] e2e as Go tests (decision: `chromedp`, gated on a Chrome binary) covering `e2e/*.spec.ts` + the
-      scratch checks above
+- [x] e2e as Go tests (`e2e/`, chromedp v0.21 driving system Chrome; skipped under `-short` or with no
+      Chrome): all 22 `e2e/*.spec.ts` specs ported on the same seed fixtures + 9 Go-UI behaviours (streaming,
+      pause counting, zoom across ticks, matrix/filter URLs, day charts, alerts, compare, N+1 expansion, 404).
+      They caught a real bug the attribute-based checks missed: author `display` rules overrode `[hidden]`,
+      so collapsed waterfall rows stayed visible — fixed with a global `[hidden] { display: none !important }`
 - [x] every page ported. `PUBLIC_DIR` stays until cutover: it is how the React UI is served for
       side-by-side checks (removal moved to Phase 7)
 

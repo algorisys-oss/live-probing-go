@@ -44,6 +44,12 @@
   box-sizing: border-box;
 }
 
+/* Go UI toggles regions with the hidden attribute; author display rules (e.g. .wf-row { display: flex })
+   would otherwise override the UA's [hidden] { display: none } and leave them on screen. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #root {

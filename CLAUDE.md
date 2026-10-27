@@ -39,7 +39,8 @@ Do not scaffold empty directories ahead of the code that fills them.
 
 - `./dev-start.sh [--watch] [--testbed [--chaos]] [--no-load] [--fresh]` — build + run on :4319 with traffic;
   `./dev-stop.sh [--wipe]` stops it (pid files in `.dev/`, never pattern kills).
-- `go test -race ./...` — all tests. `go vet ./...` — lint.
+- `go test -race -short ./...` — unit + integration (fast). `go test ./e2e/` — browser e2e (headless Chrome, ~80s;
+  `LIVEPROBE_CHROME` to pick a binary). `go vet ./...` — lint.
 - `go build -o liveprobe ./cmd/liveprobe && ./liveprobe` — server (env: see `cmd/liveprobe/main.go`).
 - `go generate ./internal/ui` — regenerate templ output after editing `*.templ` (commit the `*_templ.go`).
 
@@ -50,3 +51,6 @@ Do not scaffold empty directories ahead of the code that fills them.
 - View state belongs in the URL; the browser script only does zoom/pan, pause, collapse and selection.
 - Live fragments are rendered by the same templ components as the initial page — never two templates
   for one region.
+- Toggle visibility with the `hidden` attribute (styles.css forces `[hidden] { display: none !important }`).
+- e2e assertions check *visibility* (`checkVisibility()`), not attributes — that is what caught the
+  `[hidden]` bug. SVG elements have no `.click()`; dispatch a bubbling `MouseEvent`.

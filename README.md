@@ -17,7 +17,7 @@ stream with per-trace sequence data, aggregate topology, per-service RED metrics
 | Server: ingest, REST, `/ws`, CORS/origin policy, alert webhook | **done**, every route identical to TS server |
 | History: SQLite by UTC day, search, retention                 | **done**, reads databases the TS server wrote |
 | Collector: http / stdin / RabbitMQ sources, adapters          | **done**, adapters identical to TS under 20k-input fuzz |
-| UI: server-rendered Go (templ, server-built SVG, SSE live fragments) | **done** (all pages); Go browser e2e next |
+| UI: server-rendered Go (templ, server-built SVG, SSE live fragments) | **done** — all pages, 31 browser e2e tests |
 | Shopwave testbed in Go                                        | Phase 6                                      |
 | Docker image, run scripts, deploy                             | Phase 7                                      |
 
@@ -160,6 +160,7 @@ internal/server/      HTTP + WebSocket server, alert webhook
 internal/collector/   http / stdin / RabbitMQ sources, adapters, batching sink
 internal/ui/          server-rendered UI: templ pages, /ui/live SSE stream, static assets (embedded)
 internal/ui/view/     pure view logic: health, matrix, flow layout, formatting
+e2e/                  browser tests (chromedp): the TS Playwright specs + Go-UI behaviours
 tools/parity/         differential harnesses against the TS implementation
 docs/                 migration plan (the contract)
 ```
@@ -167,7 +168,8 @@ docs/                 migration plan (the contract)
 ## Development
 
 ```bash
-go test -race ./...     # unit + integration tests (all TS suites ported)
+go test -race -short ./...  # unit + integration tests (all TS suites ported), fast
+go test ./e2e/              # browser e2e in headless Chrome (~80s; skipped with -short or no Chrome)
 go vet ./...
 go generate ./internal/ui   # after editing *.templ (generated *_templ.go files are committed)
 ```
