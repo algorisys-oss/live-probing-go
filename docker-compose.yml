@@ -1,0 +1,59 @@
+name: liveprobe
+
+services:
+  liveprobe:
+    build: .
+    ports:
+      - "${PORT:-4319}:4319"
+    environment:
+      # Bind all interfaces: sibling containers (collector, otel-collector) and the published
+      # host port reach the server over the compose network / Docker NAT, not its own loopback.
+      # The server defaults to 127.0.0.1, which only its in-container healthcheck can hit.
+      HOST: "${HOST:-0.0.0.0}"
+      PORT: "4319"
+      DB_PATH: /data/liveprobe.db
+      RETENTION_DAYS: "${RETENTION_DAYS:-14}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
+    volumes:
+      - liveprobe-data:/data
+    restart: unless-stopped
+
+  # Algo-instrumentation HTTP adapter (same as ./serve.sh --collector).
+  # docker compose --profile collector up -d
+  collector:
+    build: .
+    profiles: ["collector"]
+    command: ["/usr/local/bin/liveprobe-collector"]
+    # The image healthcheck probes the server binary; the collector has no /healthz.
+    healthcheck:
+      disable: true
+    environment:
+      SOURCE: http
+      ADAPTER: algo-instrumentation
+      HTTP_PORT: "4320"
+      LIVEPROBE_URL: http://liveprobe:4319
+    ports:
+      - "${COLLECTOR_PORT:-4320}:4320"
+    depends_on:
+      liveprobe:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # OTel collector: accepts OTLP/protobuf from instrumented apps and re-exports JSON to LiveProbe.
+  # docker compose --profile otel up -d
+  otel-collector:
+    image: otel/opentelemetry-collector:0.115.1
+    profiles: ["otel"]
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "${OTEL_GRPC_PORT:-4317}:4317"
+      - "${OTEL_HTTP_PORT:-4318}:4318"
+    depends_on:
+      liveprobe:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  liveprobe-data:

@@ -5,32 +5,40 @@ Repo: https://github.com/algorisys-oss/live-probing-go (`dev` is the working bra
 to it — same workflow as `live-probing`'s CONTRIBUTING.md).
 
 ## Last task
-**Phase 5 complete — Go browser e2e (2026-10-27).** Earlier today: phases 0–4, the whole server-rendered UI,
-and `dev-start.sh` / `dev-stop.sh`.
-- `e2e/` (chromedp v0.21, headless system Chrome; in-process server on `:memory:`): all 22 TS Playwright
-  specs ported on the same seed fixtures + 9 Go-UI behaviours → **31 tests, all green** (~80s).
-- They caught a real bug: author `display` rules (e.g. `.wf-row { display:flex }`) overrode `[hidden]`, so
-  collapsed waterfall rows and other hidden regions stayed visible. Fixed globally in `styles.css`.
-- Phase 5 is done: every page is Go, verified against React (chart shapes, rendered text, behaviour).
-- All servers/test processes stopped; scratch DB copies removed.
+**Phase 7 complete: packaging + cutover (2026-10-28). The migration is done (Phases 0–7).**
+- `Dockerfile` (golang:1.26-alpine → `distroless/static-debian12:nonroot`, ~35 MB, `liveprobe` +
+  `liveprobe-collector`). The healthcheck is the new `liveprobe healthcheck` subcommand. `docker-compose.yml`
+  has the TS file's `collector` and `otel` profiles, plus `otel-collector-config.yaml`. Verified: the stack
+  comes up healthy and the collector forwards.
+- `serve.sh` (`--build`, `--collector`). `cmd/liveprobe-deploy` ports `scripts/deploy.js`; its pure parts
+  are unit-tested. **It has never been run against a real host.**
+- Product docs ported to `docs/` (index: `docs/README.md`). Links into the TS repo go to GitHub.
+- `PUBLIC_DIR` (React UI hosting) removed.
+- Sign-off: core (1.5k traces), adapter fuzz (20k inputs; only documented deltas #1/#4) and server
+  (88 + 68 routes, WS snapshot) differentials re-run, all identical. Unit/race, e2e (31) and testbed tests
+  green.
+- Fixed two flakes. (1) An e2e test named traces with a 19-digit nanosecond number; about 10% of those
+  pass Luhn, get masked as card numbers, and the test never found its row. Ids are base 36 now.
+  (2) server-parity compared WS alerts in `since` order, which is wall-clock; they are compared as a set now.
 
 ## How to run / verify
-- **`./dev-start.sh`** (synthetic traffic) or **`./dev-start.sh --watch`**, open http://localhost:4319;
-  `./dev-stop.sh` to stop. `--testbed` uses the Docker testbed from `../live-probing`.
-- `go test -race -short ./...` (fast) · `go test ./e2e/` (browser) · `go vet ./...` ·
+- **`./dev-start.sh`** (synthetic traffic), `--watch`, `--testbed [--chaos]` (Go Shopwave in Docker); open
+  http://localhost:4319; `./dev-stop.sh [--wipe]`.
+- **`./serve.sh [--collector]`** for a real app, or **`docker compose up -d`**.
+- `go test -race -short ./...` · `go test ./e2e/` · `(cd testbed && go test ./...)` · `go vet ./...` ·
   `go generate ./internal/ui` after editing `*.templ`.
 - Parity harnesses vs the TS implementation: `tools/parity/README.md`.
 
 ## Next
-1. **Phase 6 — testbed in Go**: shared OTel Go SDK setup + chaos/resilient helpers (port
-   `../live-probing/testbed/packages/shared` with its tests), then gateway, auth, catalog, cart, order,
-   payment/inventory/notification workers, loadgen; docker-compose + dev/chaos overlays. Until then,
-   `./dev-start.sh --testbed` runs the TS testbed against the Go server.
-2. **Phase 7** — Docker image (distroless), `serve.sh`, deploy command, docs, drop `PUBLIC_DIR`, cutover.
+- **Archiving the TS tree is the owner's call.** Only optional things here still reference `../live-probing`:
+  the parity harnesses, `dev-start.sh --ts-testbed`, and GitHub links in the docs.
+- Not ported (by decision): the testbed's React storefront SPA and `examples/otel-react-go`.
+- `liveprobe-deploy` should get a first supervised run against a staging host.
 
 ## Gotchas
 - **Never point a server at the real `../live-probing/packages/server/data/liveprobe.db`** without
   `RETENTION_DAYS=0` — its July 2026 data would be pruned at startup. Use a sample copy.
+- Test data with long digit runs (timestamps, ids) can be masked at ingest (Luhn → card number). Use base 36.
 - Playwright MCP browser crashes on this machine; use headless `chromium.launch({channel:"chrome"})`.
 - **`pkill -f <pattern>` kills the Bash tool's own shell** when the pattern text appears in the command.
   Use `pkill -x liveprobe` / `pkill -x liveprobe-loadg` — process names are truncated to **15 chars**.

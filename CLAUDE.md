@@ -6,8 +6,8 @@ for the product model; this file covers only what differs.
 
 ## Status
 
-Mid-migration. `docs/migration-plan.md` is the contract and phase checklist. `HANDOFF.md` is the
-current state. Start there.
+Migration complete (Phases 0–7). `docs/migration-plan.md` is the contract and records every
+deliberate delta from TS; `HANDOFF.md` is the current state. Product docs are in `docs/`.
 
 ## Layout
 
@@ -15,6 +15,7 @@ current state. Start there.
 cmd/liveprobe/             server binary (ingest + API + WS + UI)            [phase 2]
 cmd/liveprobe-collector/   collector binary                                   [phase 4]
 cmd/liveprobe-loadgen/     synthetic traffic for development (dev-start.sh)
+cmd/liveprobe-deploy/      interactive deploy: docker build/save → ssh/scp → remote load  [phase 7]
 internal/core/             event model, window, projections, masking, export  [phase 1]
 internal/server/           HTTP/WS server                                     [phase 2]
 internal/history/          SQLite history store                               [phase 3]
@@ -41,7 +42,9 @@ Do not scaffold empty directories ahead of the code that fills them.
   `./dev-stop.sh [--wipe]` stops it (pid files in `.dev/`, never pattern kills).
 - `go test -race -short ./...` — unit + integration (fast). `go test ./e2e/` — browser e2e (headless Chrome, ~80s;
   `LIVEPROBE_CHROME` to pick a binary). `go vet ./...` — lint.
-- `go build -o liveprobe ./cmd/liveprobe && ./liveprobe` — server (env: see `cmd/liveprobe/main.go`).
+- `go build -o liveprobe ./cmd/liveprobe && ./liveprobe` — server (env: see `cmd/liveprobe/main.go`);
+  `./serve.sh [--build] [--collector]` — the same for a real app; `docker compose [--profile collector|otel] up -d`.
+- `liveprobe healthcheck` — exit 0 if the server on `$PORT` answers `/healthz` (the distroless image has no shell).
 - `go generate ./internal/ui` — regenerate templ output after editing `*.templ` (commit the `*_templ.go`).
 
 ## UI rules

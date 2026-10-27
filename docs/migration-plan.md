@@ -97,7 +97,7 @@ Oracle: `packages/server/src/server.test.ts`, `alert-webhook.test.ts`, summary.t
 - [x] Origin/CORS policy (loopback always, `CORS_ORIGINS` extra; cross-site WS → 403), default bind `127.0.0.1`
 - [x] alert tick with `since` tracking + webhook notifier (timeout, backoff, per-id cooldown)
 - [x] env parity: `PORT HOST DB_PATH CORS_ORIGINS MASK_PII RETENTION_DAYS LIVE_WINDOW_MINUTES MAX_TRACES ALERT_WEBHOOK_*`
-      (+ `PUBLIC_DIR`, a migration aid to serve a built UI from disk)
+      (`PUBLIC_DIR`, a migration aid to serve the React UI from disk, was removed at cutover)
 - [x] all 9 server + 7 webhook TS tests ported (+1 service-detail test), race-clean
 - [x] server differential vs the TS server (`tools/parity/server-parity.mjs`): 68 routes w/ hostile input,
       88 routes + WS snapshot w/ populated live window, 118 routes over a TS-written history DB — all identical
@@ -161,8 +161,7 @@ Design (decided 2026-10-27):
       pause counting, zoom across ticks, matrix/filter URLs, day charts, alerts, compare, N+1 expansion, 404).
       They caught a real bug the attribute-based checks missed: author `display` rules overrode `[hidden]`,
       so collapsed waterfall rows stayed visible — fixed with a global `[hidden] { display: none !important }`
-- [x] every page ported. `PUBLIC_DIR` stays until cutover: it is how the React UI is served for
-      side-by-side checks (removal moved to Phase 7)
+- [x] every page ported. `PUBLIC_DIR` (React UI hosting for side-by-side checks) was removed in Phase 7
 
 ### Phase 6 — testbed in Go (`testbed/`, its own module `shopwave`) ✅
 - [x] shared lib: env, fault injection, client resilience (all 16 TS tests ported), contracts, and the
@@ -181,12 +180,22 @@ Design (decided 2026-10-27):
   on OSS Redis (disabled); Go cancels server work on client timeout where Node didn't (`WithoutCancel`).
 - Not ported: the React storefront SPA (`--profile ui`), an optional demo UI rather than a traffic source.
 
-### Phase 7 — packaging + cutover
-- [ ] multi-stage Dockerfile → distroless static image; healthcheck via the binary
+### Phase 7 — packaging + cutover ✅
+- [x] multi-stage Dockerfile → `gcr.io/distroless/static-debian12:nonroot` (~35 MB, both binaries);
+      healthcheck is `liveprobe healthcheck` (GET `/healthz` on `$PORT`, exit 0/1). docker-compose.yml with
+      the TS file's `collector` and `otel` profiles; verified: stack comes up healthy, collector forwards
 - [x] `dev-start.sh` / `dev-stop.sh` (pulled forward to Phase 5 so the UI can be tried): synthetic traffic
       via `cmd/liveprobe-loadgen`, or the TS Docker testbed (`--testbed`, `--chaos`) feeding the Go server
       unchanged; `--watch` rebuild/restart; pid-file based stop
-- [ ] `serve.sh` equivalent; `deploy` as a Go command
-- [ ] docs ported (README, architecture, integrating-your-app)
-- [ ] remove `PUBLIC_DIR` (React-UI hosting, kept for side-by-side checks until cutover)
-- [ ] parity sign-off against this checklist; TS tree archived
+- [x] `serve.sh` (same flags: `--build`, `--collector`); `cmd/liveprobe-deploy` ports `scripts/deploy.js`
+      step for step (version/remote-dir validation and the compose `build:` → `image:` rewrite unit-tested;
+      never run against a real host here)
+- [x] docs ported to `docs/` (architecture, event model, live views, PII masking, integrating your app,
+      integration adapters, Shopwave events, per-adapter mappings), describing the Go code
+- [x] `PUBLIC_DIR` removed
+- [x] parity sign-off after cutover: core (1,533 traces / 28,624 events), adapter fuzz (20k; only deltas
+      #1 and #4) and server (88 routes + WS snapshot populated, 68 hostile) differentials, all identical.
+      Unit/race, e2e and testbed tests green. The harness now compares WS alerts as a set: they are ordered by
+      wall-clock first-seen in both servers, so order varied run to run
+- [ ] TS tree archived — the owner's call, not done here. Nothing in this repo depends on `../live-probing`
+      except the parity harnesses and `dev-start.sh --ts-testbed`, both optional

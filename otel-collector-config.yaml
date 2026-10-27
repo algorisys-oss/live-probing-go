@@ -1,0 +1,26 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  # LiveProbe reads OTLP/JSON; this exporter translates protobuf spans to JSON.
+  otlphttp/liveprobe:
+    endpoint: http://liveprobe:4319
+    encoding: json
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/liveprobe]

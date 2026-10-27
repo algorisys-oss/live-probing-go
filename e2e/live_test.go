@@ -1,7 +1,7 @@
 package e2e
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +61,10 @@ func TestPauseTogglesTheFeed(t *testing.T) {
 
 // --- Go UI: live streaming ------------------------------------------------------------------
 
+// uniq is a fresh name suffix. Base 36, not decimal: a long run of digits can pass the Luhn check
+// and be masked as a card number at ingest, and then the test never finds its own row.
+func uniq() string { return strconv.FormatInt(time.Now().UnixNano(), 36) }
+
 func liveTrace(id, op string) []core.Event {
 	now := time.Now().UnixMilli() * 1000
 	return []core.Event{ev(id, id+"-a", "", gateway, "", op, core.KindServer, now, 5*ms, core.StatusOK, nil)}
@@ -70,7 +74,7 @@ func TestNewTracesStreamIntoTheFeed(t *testing.T) {
 	b := open(t)
 	b.goTo("/")
 	b.waitJS("stream connected", textOf("#lp-status-text")+" === 'live'")
-	op := fmt.Sprintf("GET /streamed-%d", time.Now().UnixNano())
+	op := "GET /streamed-" + uniq()
 	post(t, liveTrace("stream-"+op, op))
 	b.waitJS("streamed row", withText(".trace-row", op))
 	if top := b.jsString(textOf("#lp-trace-list > li .trace-op")); top != op {
@@ -83,7 +87,7 @@ func TestPauseHoldsAndCountsNewTraces(t *testing.T) {
 	b.goTo("/")
 	b.waitJS("stream connected", textOf("#lp-status-text")+" === 'live'")
 	b.click("#lp-pause")
-	op := fmt.Sprintf("GET /held-%d", time.Now().UnixNano())
+	op := "GET /held-" + uniq()
 	post(t, liveTrace("held-"+op, op))
 	b.waitJS("held count", textOf("#lp-pause")+" === 'Paused · 1 new'")
 	if b.jsInt("("+withText(".trace-row", op)+") ? 1 : 0") != 0 {
@@ -100,7 +104,7 @@ func TestZoomSurvivesLiveUpdates(t *testing.T) {
 	b.click("[data-zoom='0.83']")
 	zoomed := b.jsString("document.getElementById('lp-flow-svg').getAttribute('viewBox')")
 	// Calls to an already-known edge change counts, not the node set → no re-fit.
-	post(t, crossService(fmt.Sprintf("zoom-%d", time.Now().UnixNano()), ops.cart, "cart-service", "read", time.Now().UnixMilli()*1000, false))
+	post(t, crossService("zoom-"+uniq(), ops.cart, "cart-service", "read", time.Now().UnixMilli()*1000, false))
 	time.Sleep(1500 * time.Millisecond) // > one topology tick
 	if vb := b.jsString("document.getElementById('lp-flow-svg').getAttribute('viewBox')"); vb != zoomed {
 		t.Errorf("viewBox reset by a live tick: %q -> %q", zoomed, vb)

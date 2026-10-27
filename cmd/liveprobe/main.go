@@ -1,10 +1,13 @@
-// Command liveprobe runs the LiveProbe server: OTLP/native ingest, REST API, live /ws stream and
-// (when PUBLIC_DIR is set) a static UI. Configuration is by environment, matching the TS server.
+// Command liveprobe runs the LiveProbe server: OTLP/native ingest, REST API, the live /ws stream
+// and the server-rendered UI, in one binary. Configuration is by environment, matching the TS
+// server. `liveprobe healthcheck` probes a running server (the container healthcheck: the
+// distroless image has no shell or curl).
 package main
 
 import (
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,10 +34,22 @@ func numEnv(name string, min float64) (float64, bool) {
 
 func ms(n float64) time.Duration { return time.Duration(n * float64(time.Millisecond)) }
 
+// healthcheck GETs /healthz on the local server (PORT) and exits 0 when it answers 2xx.
+func healthcheck(port int) {
+	res, err := (&http.Client{Timeout: 3 * time.Second}).Get("http://127.0.0.1:" + strconv.Itoa(port) + "/healthz")
+	if err != nil || res.StatusCode < 200 || res.StatusCode > 299 {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
 func main() {
 	port := 4318
 	if p, ok := numEnv("PORT", 0); ok {
 		port = int(p)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		healthcheck(port)
 	}
 	// Persist history at DB_PATH (e.g. a mounted /data volume); default ./data/liveprobe.db.
 	dbPath := os.Getenv("DB_PATH")
@@ -51,8 +66,6 @@ func main() {
 		DBPath: dbPath,
 		// Bind loopback by default (the ingest/API have no auth). HOST=0.0.0.0 to expose.
 		Host: os.Getenv("HOST"),
-		// PUBLIC_DIR serves a built UI from disk (migration aid until the Go UI is embedded).
-		PublicDir: os.Getenv("PUBLIC_DIR"),
 		// MASK_PII=off disables the built-in PII/secret scrubbing (not recommended).
 		MaskDisabled: os.Getenv("MASK_PII") == "off",
 	}

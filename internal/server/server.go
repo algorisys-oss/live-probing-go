@@ -16,8 +16,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -34,7 +32,6 @@ import (
 )
 
 type Options struct {
-	PublicDir     string // serve a built UI from disk instead of the Go UI (migration aid)
 	DBPath        string // sqlite history db; ":memory:" (default) or a file path
 	MaxTraces     int    // live window cap; default 2000
 	HorizonMicros int64  // live window horizon; default 5 min
@@ -685,8 +682,6 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, path string) erro
 			return err
 		}
 		return s.dayRoute(w, q, day, m[2])
-	case get && s.opts.PublicDir != "":
-		s.serveStatic(w, r.URL.Path)
 	case get:
 		s.ui.ServeHTTP(w, r)
 	default:
@@ -838,50 +833,5 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 	w.Header().Set("content-type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write(data)
-}
-
-var mimeTypes = map[string]string{
-	".html": "text/html; charset=utf-8",
-	".js":   "text/javascript; charset=utf-8",
-	".css":  "text/css; charset=utf-8",
-	".json": "application/json; charset=utf-8",
-	".svg":  "image/svg+xml",
-	".ico":  "image/x-icon",
-}
-
-// serveStatic serves the built UI with an SPA fallback to index.html for unknown routes.
-func (s *Server) serveStatic(w http.ResponseWriter, urlPath string) {
-	if s.opts.PublicDir == "" {
-		writeJSON(w, 404, map[string]string{"error": "not_found"})
-		return
-	}
-	root, err := filepath.Abs(s.opts.PublicDir)
-	if err != nil {
-		writeJSON(w, 404, map[string]string{"error": "not_found"})
-		return
-	}
-	if urlPath == "/" {
-		urlPath = "/index.html"
-	}
-	file := filepath.Join(root, filepath.FromSlash(filepath.Clean("/"+urlPath)))
-	if !strings.HasPrefix(file, root+string(filepath.Separator)) {
-		writeJSON(w, 403, map[string]string{"error": "forbidden"})
-		return
-	}
-	data, err := os.ReadFile(file)
-	if err != nil {
-		file = filepath.Join(root, "index.html")
-		if data, err = os.ReadFile(file); err != nil {
-			writeJSON(w, 404, map[string]string{"error": "not_found"})
-			return
-		}
-	}
-	ct := mimeTypes[filepath.Ext(file)]
-	if ct == "" {
-		ct = "application/octet-stream"
-	}
-	w.Header().Set("content-type", ct)
-	w.WriteHeader(200)
 	_, _ = w.Write(data)
 }

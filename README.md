@@ -1,9 +1,10 @@
 # LiveProbe (Go)
 
 Live sequence and flow diagrams of running systems, drawn from observed runtime behavior
-rather than parsed source. This is the Go port of [`../live-probing`](../live-probing) (TypeScript).
-The migration is in progress. The server and collector are feature-complete and verified against
-the TS implementation; the UI and testbed are still to come.
+rather than parsed source. This is the Go port of [live-probing](https://github.com/algorisys-oss/live-probing) (TypeScript).
+The migration is complete: server, collector, UI, testbed and packaging are all in Go, and every
+part is verified against the TS implementation. One static binary serves ingest, API, live stream
+and UI; there is no Node and no build step.
 
 Send LiveProbe OpenTelemetry traces (OTLP/HTTP JSON) or its native event JSON. It keeps a rolling
 live window, persists history to SQLite by UTC day, and serves a REST API and a live WebSocket
@@ -19,10 +20,10 @@ stream with per-trace sequence data, aggregate topology, per-service RED metrics
 | Collector: http / stdin / RabbitMQ sources, adapters          | **done**, adapters identical to TS under 20k-input fuzz |
 | UI: server-rendered Go (templ, server-built SVG, SSE live fragments) | **done** — all pages, 31 browser e2e tests |
 | Shopwave testbed in Go (`testbed/`)                           | **done** — 8 services + loadgen, verified end to end |
-| Docker image, run scripts, deploy                             | Phase 7                                      |
+| Docker image (distroless, ~35 MB), `serve.sh`, deploy command | **done**                                     |
 
-The phase checklists are in [docs/migration-plan.md](docs/migration-plan.md), and the current
-state is in [HANDOFF.md](HANDOFF.md).
+The phase checklists are in [docs/migration-plan.md](docs/migration-plan.md), the current state
+is in [HANDOFF.md](HANDOFF.md), and the product docs start at [docs/README.md](docs/README.md).
 
 ## Quick start
 
@@ -65,7 +66,7 @@ curl -s localhost:4319/api/topology                    # aggregate graph + Merma
 
 To send traces from an OpenTelemetry-instrumented app, configure an OTel collector to export
 **OTLP/HTTP JSON** to `http://<host>:4319/v1/traces`. Integration is the same as for the TS
-server; see [../live-probing/docs/integrating-your-app.md](../live-probing/docs/integrating-your-app.md).
+server; see [docs/integrating-your-app.md](docs/integrating-your-app.md).
 
 ### UI
 
@@ -73,13 +74,6 @@ Open `http://localhost:4319`. The whole UI is rendered by the Go binary (no Node
 live view (trace feed, RED tiles, health-coloured flow graph ⇄ dependency matrix), trace page
 (waterfall with critical path, sequence diagram with N+1 grouping), history and day pages (throughput,
 latency, histogram, heatmap, flamegraph), search, errors, alerts, service and compare.
-
-For side-by-side comparison during the migration, the Go server can still host the React UI:
-
-```bash
-(cd ../live-probing && npm ci && npm run build -w @liveprobe/ui)
-PUBLIC_DIR=../live-probing/packages/ui/dist PORT=4319 ./liveprobe
-```
 
 ## Configuration
 
@@ -97,7 +91,6 @@ All configuration is by environment variable, with the same names and defaults a
 | `MASK_PII` | on | `off` disables PII/secret scrubbing at ingest (not recommended) |
 | `ALERT_WEBHOOK_URL` | — | POST target, fired once each time an alert starts firing |
 | `ALERT_WEBHOOK_TIMEOUT_MS` / `_RETRIES` / `_COOLDOWN_MS` | `5000` / `2` / `60000` | Webhook delivery tuning |
-| `PUBLIC_DIR` | — | Serve a built UI from disk (migration aid, Go-only) |
 
 > ⚠️ Retention runs at startup. If you open an existing database whose data is older than
 > `RETENTION_DAYS`, those days are **deleted**. Set `RETENTION_DAYS=0` to inspect old data.
@@ -127,7 +120,41 @@ SOURCE=rabbitmq ADAPTER=adapter-id-1 RABBITMQ_URL=amqp://… QUEUE=liveprobe.tap
 | `QUEUE_MAX_LENGTH` / `QUEUE_MESSAGE_TTL_MS` | — | Bound the tap queue (drop-head) while the collector is down |
 
 Adapter field mappings are documented in
-[../live-probing/docs/integration-adapters.md](../live-probing/docs/integration-adapters.md).
+[docs/integration-adapters.md](docs/integration-adapters.md).
+
+## Running it for real
+
+`./serve.sh` runs just the server on `:4319` (no testbed, no synthetic traffic). It builds the
+binaries if they are missing, or always with `--build`. `--collector` also runs the
+algo-instrumentation collector on `:4320`. This is the entry point for pointing a real app at
+LiveProbe; `dev-start.sh` is for developing LiveProbe itself.
+
+### Docker
+
+```bash
+docker compose up -d                          # server on :4319, history in the liveprobe-data volume
+docker compose --profile collector up -d      # + algo-instrumentation collector on :4320
+docker compose --profile otel up -d           # + OTel collector on :4317/:4318 (protobuf in, JSON out)
+```
+
+The image is `gcr.io/distroless/static` with the two binaries (`liveprobe`, `liveprobe-collector`),
+running as `nonroot`. Its healthcheck is `liveprobe healthcheck`, which GETs `/healthz` on `$PORT`,
+because the image has no shell or curl. Compose binds `HOST=0.0.0.0` inside the container and
+defaults `RETENTION_DAYS` to 14. Override `PORT`, `COLLECTOR_PORT`, `RETENTION_DAYS` and
+`CORS_ORIGINS` from the environment or a `.env` file.
+
+### Deploy
+
+```bash
+go run ./cmd/liveprobe-deploy
+```
+
+This is an interactive port of the TS `deploy.js`. It builds `liveprobe:<version>` locally,
+`docker save`s it, and copies the tarball over one multiplexed SSH session (you are asked for a
+password once). With it go a `docker-compose.yml` whose `build:` keys are rewritten to that image tag,
+`otel-collector-config.yaml`, and, if you choose, your local `.env`. It then runs `docker load` on
+the host and can optionally run `docker compose up -d --no-build` there. It needs `docker`, `ssh`
+and `scp`.
 
 ## API
 
@@ -154,7 +181,10 @@ The wire format is identical to the TS server, so existing clients work unchange
 cmd/liveprobe/        server binary
 cmd/liveprobe-collector/  collector binary (sources + adapters → /v1/events)
 cmd/liveprobe-loadgen/    synthetic multi-service traffic for development
+cmd/liveprobe-deploy/     interactive build → ssh/scp → remote docker load
+serve.sh                  run the server (+ collector) for a real app
 dev-start.sh / dev-stop.sh  dev runner (synthetic traffic or the Docker testbed, optional watch mode)
+Dockerfile, docker-compose.yml, otel-collector-config.yaml  packaging
 internal/core/        event model and every pure projection of it (stdlib only)
 internal/history/     SQLite history store (same schema as TS)
 internal/server/      HTTP + WebSocket server, alert webhook
@@ -164,7 +194,7 @@ internal/ui/view/     pure view logic: health, matrix, flow layout, formatting
 e2e/                  browser tests (chromedp): the TS Playwright specs + Go-UI behaviours
 testbed/              Shopwave demo system in Go (own module) — see testbed/README.md
 tools/parity/         differential harnesses against the TS implementation
-docs/                 migration plan (the contract)
+docs/                 product docs (architecture, event model, integrating, adapters) + migration plan
 ```
 
 ## Development

@@ -106,7 +106,8 @@ for (const [label, req] of [
   if (ta.headers.get(h) !== ga.headers.get(h)) diffs.push(`${label}: ${h} ts=${ta.headers.get(h)} go=${ga.headers.get(h)}`);
 }
 
-// WebSocket snapshot (alert `since` is wall-clock, so it is dropped before comparing).
+// WebSocket snapshot. Alert `since` is wall-clock (first seen by a tick during the feed), and
+// alerts are ordered by it, so `since` is dropped and same-severity alerts compared as a set.
 const snapshot = (base) =>
   new Promise((resolve, reject) => {
     const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws");
@@ -114,7 +115,10 @@ const snapshot = (base) =>
     ws.onerror = reject;
   });
 const [ts, go] = await Promise.all([snapshot(tsBase), snapshot(goBase)]);
-for (const s of [ts, go]) for (const a of s.alerts) delete a.since;
+for (const s of [ts, go]) {
+  for (const a of s.alerts) delete a.since;
+  s.alerts.sort((a, b) => a.severity.localeCompare(b.severity) || a.id.localeCompare(b.id));
+}
 cmp(ts, go, "ws.snapshot");
 
 console.log(`routes compared: ${routes.length + 6} + ws snapshot (${ts.traces.length} traces, ${ts.alerts.length} alerts)`);

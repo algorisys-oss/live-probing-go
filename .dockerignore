@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+.dev
+data
+*.db
+*.log
+
+/liveprobe
+/liveprobe-collector
+testbed
+e2e
+tools
+docs
