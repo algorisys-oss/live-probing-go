@@ -13,7 +13,7 @@ against it; do not rubber-stamp.
 | history (SQLite day-partitioned store) | `node:sqlite` | `internal/history` — `modernc.org/sqlite` (pure Go, no cgo) — **same schema**, existing `.db` files stay readable |
 | collector (http/stdin/RabbitMQ sources, adapters) | `packages/collector` (amqplib) | `internal/collector` + `cmd/liveprobe-collector` — `rabbitmq/amqp091-go` |
 | UI | React + zustand + Vite SPA | **Server-rendered Go**: `templ` components, server-built SVG, a small vanilla-JS live client (SSE → pre-rendered fragments applied in one rAF batch). No htmx (nothing needs it). Assets embedded with `go:embed` → one binary. |
-| testbed (Shopwave demo services) | `testbed/` (TS) | **Later phase**: Go services using the OTel Go SDK |
+| testbed (Shopwave demo services) | `testbed/` (TS) | `testbed/` — Go services on the OTel Go SDK, a separate module (`shopwave`) so its deps stay out of LiveProbe |
 | e2e | Playwright (TS) | Go browser tests with `chromedp` (drives a local Chrome; skipped when absent) |
 | packaging | Node Docker image, bash scripts, `deploy.js` | static binary in a distroless image; bash scripts kept; `deploy` as a Go cmd |
 
@@ -65,6 +65,9 @@ live client, no framework). Everything that *runs on a server or is authored as 
     en-IN browser showed `6,549` too but `1,23,456` for larger numbers); a server-rendered page can't know it.
 14. **Endpoint selection on the day page is a navigation** (`?endpoint=…#latency`), not an in-place
     fetch; the anchor scrolls the charts into view.
+15. **Enhancement — newer OTel DB semconv**: peer resolution also reads `db.system.name` (semconv ≥ 1.33,
+    emitted by e.g. otelpgx). TS read only `db.system`, so a modern SDK's Postgres spans became a ghost
+    "postgres" host. Found while instrumenting the Go testbed.
 
 ## Phases
 
@@ -161,11 +164,22 @@ Design (decided 2026-10-27):
 - [x] every page ported. `PUBLIC_DIR` stays until cutover: it is how the React UI is served for
       side-by-side checks (removal moved to Phase 7)
 
-### Phase 6 — testbed in Go (`testbed/`)
-- [ ] shared lib (OTel Go SDK setup, chaos + resilient fetch, pg/redis/amqp helpers) with tests
-- [ ] services: gateway, auth, catalog, cart, order, payment-worker, inventory-worker,
-      notification-worker, loadgen
-- [ ] docker-compose (+ dev, chaos overlays) — same topology & traffic shape as TS testbed
+### Phase 6 — testbed in Go (`testbed/`, its own module `shopwave`) ✅
+- [x] shared lib: env, fault injection, client resilience (all 16 TS tests ported), contracts, and the
+      instrumented plumbing — OTel SDK (OTLP/HTTP), `otelhttp`, `otelpgx`, `redisotel`, hand-written
+      AMQP producer/consumer spans with W3C context in message headers
+- [x] services: gateway, auth, catalog, cart, order (+ saga), payment / inventory / notification workers,
+      loadgen; plus a `healthcheck` binary for the distroless image
+- [x] auth interoperates with the TS service: scrypt hashes and HS256 JWTs verified against Node-made
+      artifacts
+- [x] docker-compose (+ chaos overlay); one distroless image; readiness healthchecks gate the loadgen
+- [x] verified end to end through `./dev-start.sh --testbed`: one checkout = one 48–53-span trace across
+      9 services through RabbitMQ; 0 errors from a cold start; `--chaos` gives order red, catalog slow with
+      callers timing out/retrying, datastore edges clean
+- Found + fixed along the way: LiveProbe now reads `db.system.name` (delta 15); RabbitMQ's healthcheck
+  passes before AMQP accepts connections (retry + readiness gating); go-redis's Enterprise handshake errors
+  on OSS Redis (disabled); Go cancels server work on client timeout where Node didn't (`WithoutCancel`).
+- Not ported: the React storefront SPA (`--profile ui`), an optional demo UI rather than a traffic source.
 
 ### Phase 7 — packaging + cutover
 - [ ] multi-stage Dockerfile → distroless static image; healthcheck via the binary

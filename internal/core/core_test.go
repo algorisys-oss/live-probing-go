@@ -608,3 +608,19 @@ func TestCriticalPath(t *testing.T) {
 		t.Error("D ran concurrently in B's shadow → not on the critical path")
 	}
 }
+
+func TestNormalizeOTLPReadsNewDBSemconv(t *testing.T) {
+	// OTel semconv >= 1.33 renamed db.system to db.system.name (e.g. otelpgx emits it). Both must
+	// resolve to the datastore, not fall through to server.address ("postgres" host → a ghost).
+	for _, key := range []string{"db.system", "db.system.name"} {
+		p := OTLPPayload{ResourceSpans: []OTLPResourceSpans{{
+			Resource: &OTLPResource{Attributes: []OTLPKeyValue{strAttr("service.name", "catalog")}},
+			ScopeSpans: []OTLPScopeSpans{{Spans: []OTLPSpan{{TraceID: "t", SpanID: "s", Name: "SELECT", Kind: 3,
+				StartTimeUnixNano: "1000", EndTimeUnixNano: "2000",
+				Attributes: []OTLPKeyValue{strAttr(key, "postgresql"), strAttr("server.address", "postgres")}}}}},
+		}}}
+		if peer := NormalizeOTLP(p)[0].Peer; peer != "postgresql" {
+			t.Errorf("%s: peer = %q, want postgresql", key, peer)
+		}
+	}
+}

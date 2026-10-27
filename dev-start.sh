@@ -7,10 +7,11 @@
 #                              traffic from liveprobe-loadgen (no Docker, no Node). Open the UI at
 #                              http://localhost:4319.
 #   ./dev-start.sh --watch     Same, but rebuild + restart the server on any .go / .templ / static change.
-#   ./dev-start.sh --testbed   Real traffic instead: start the Shopwave Docker testbed from
-#                              ../live-probing/testbed (its OTel collector exports to host:4319, so
-#                              it feeds this server unchanged). Override the path with LIVE_PROBING_TS.
-#   ./dev-start.sh --chaos     (with --testbed) inject failure modes (slow catalog, flaky order).
+#   ./dev-start.sh --testbed   Real traffic instead: start the Shopwave Docker testbed (./testbed, the Go
+#                              services; its OTel collector exports to host:4319).
+#   ./dev-start.sh --ts-testbed  Same, but the original TS testbed from ../live-probing/testbed
+#                              (override the path with LIVE_PROBING_TS) — handy for side-by-side checks.
+#   ./dev-start.sh --chaos     (with a testbed) inject failure modes (slow catalog, flaky order).
 #   ./dev-start.sh --no-load   No traffic generator (point your own app at :4319).
 #   ./dev-start.sh --fresh     Keep history in memory (DB_PATH=:memory:) instead of .dev/data.
 #
@@ -28,6 +29,7 @@ cd "$ROOT"
 PORT="${PORT:-4319}"
 WATCH=0
 TESTBED=0
+TS_TESTBED=0
 CHAOS=0
 LOAD=1
 FRESH=0
@@ -35,10 +37,11 @@ for arg in "$@"; do
   case "$arg" in
     --watch) WATCH=1 ;;
     --testbed) TESTBED=1 ;;
+    --ts-testbed) TESTBED=1; TS_TESTBED=1 ;;
     --chaos) CHAOS=1 ;;
     --no-load) LOAD=0 ;;
     --fresh) FRESH=1 ;;
-    -h | --help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (see --help)" >&2; exit 1 ;;
   esac
 done
@@ -97,19 +100,31 @@ build
 
 # --- traffic ---------------------------------------------------------------------------------
 if [[ "$TESTBED" == 1 ]]; then
-  TS_ROOT="${LIVE_PROBING_TS:-$ROOT/../live-probing}"
-  if [[ ! -f "$TS_ROOT/testbed/docker-compose.yml" ]]; then
-    echo "No testbed at $TS_ROOT/testbed (set LIVE_PROBING_TS to the live-probing checkout)." >&2
-    exit 1
+  TESTBED_DIR="$ROOT/testbed"
+  if [[ "$TS_TESTBED" == 1 ]]; then
+    TESTBED_DIR="${LIVE_PROBING_TS:-$ROOT/../live-probing}/testbed"
+    if [[ ! -f "$TESTBED_DIR/docker-compose.yml" ]]; then
+      echo "No testbed at $TESTBED_DIR (set LIVE_PROBING_TS to the live-probing checkout)." >&2
+      exit 1
+    fi
   fi
   CHAOS_FILE=()
   [[ "$CHAOS" == 1 ]] && CHAOS_FILE=(-f docker-compose.chaos.yml)
-  echo "==> Starting the Shopwave testbed (Docker; first run builds images)"
-  ( cd "$TS_ROOT/testbed" && docker compose -f docker-compose.yml "${CHAOS_FILE[@]}" up -d --build )
+  echo "==> Starting the Shopwave testbed in $TESTBED_DIR (Docker; first run builds images)"
+  # Build with retries: a registry hiccup during BuildKit's base-image metadata check shouldn't
+  # stop the run when the images are already built locally.
+  built=0
+  for attempt in 1 2 3; do
+    if ( cd "$TESTBED_DIR" && docker compose -f docker-compose.yml "${CHAOS_FILE[@]}" build ); then built=1; break; fi
+    echo "    build attempt $attempt failed — retrying in 5s" >&2
+    sleep 5
+  done
+  [[ "$built" == 1 ]] || echo "    build failed 3 times — starting with the images already built (if any)" >&2
+  ( cd "$TESTBED_DIR" && docker compose -f docker-compose.yml "${CHAOS_FILE[@]}" up -d )
   if [[ "$LOAD" == 1 ]]; then
-    ( cd "$TS_ROOT/testbed" && docker compose -f docker-compose.yml "${CHAOS_FILE[@]}" --profile load up -d loadgen )
+    ( cd "$TESTBED_DIR" && docker compose -f docker-compose.yml "${CHAOS_FILE[@]}" --profile load up -d loadgen )
   fi
-  echo "$TS_ROOT" > "$DEV/testbed"
+  echo "$TESTBED_DIR" > "$DEV/testbed"
 fi
 
 start_server
@@ -129,9 +144,11 @@ cat <<EOF
   LiveProbe UI      http://localhost:${PORT}
   OTLP ingest       POST http://localhost:${PORT}/v1/traces   native: /v1/events
   History DB        ${DB_PATH}
-  Traffic           $([[ "$TESTBED" == 1 ]] && echo "Shopwave testbed (Docker)$([[ "$CHAOS" == 1 ]] && echo ", chaos on")" || ([[ "$LOAD" == 1 ]] && echo "synthetic loadgen (.dev/logs/loadgen.log)" || echo "none"))
+  Traffic           $([[ "$TESTBED" == 1 ]] && echo "Shopwave testbed ($([[ "$TS_TESTBED" == 1 ]] && echo TS || echo Go), Docker)$([[ "$CHAOS" == 1 ]] && echo ", chaos on")" || ([[ "$LOAD" == 1 ]] && echo "synthetic loadgen (.dev/logs/loadgen.log)" || echo "none"))
   Logs              .dev/logs/
   Mode              $([[ "$WATCH" == 1 ]] && echo "watch: rebuild + restart on change" || echo "static build")
+
+  Jaeger            $([[ "$TESTBED" == 1 ]] && echo "http://localhost:16687" || echo "-")
 
   Ctrl-C to stop.   ./dev-stop.sh tears everything down.
 

@@ -1,0 +1,323 @@
+# Shopwave in Go — same topology, ports and traffic shape as ../live-probing/testbed, built from
+# this module. Tracing is explicit OpenTelemetry Go (otelhttp, otelpgx, redisotel, AMQP spans),
+# exported OTLP/HTTP to the collector, which fans out to Jaeger and LiveProbe on the host (:4319).
+#
+#   docker compose up -d --build                 # services + infra
+#   docker compose --profile load up -d loadgen  # traffic
+#   docker compose -f docker-compose.yml -f docker-compose.chaos.yml --profile load up -d   # failures
+name: shopwave-go
+
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+
+x-health: &health
+  interval: 2s
+  timeout: 3s
+  retries: 60
+
+x-service: &service
+  image: shopwave-go:dev
+  # Self-heal if a dependency wasn't ready yet (e.g. RabbitMQ's healthcheck passes before its AMQP
+  # listener accepts connections).
+  restart: on-failure
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shopwave
+      POSTGRES_PASSWORD: shopwave
+      POSTGRES_DB: shopwave
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopwave"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "55672:5672"
+      - "15673:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16687:16686"   # UI (host 16687 to avoid an existing Jaeger on 16686)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.115.1
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "24317:4317"   # OTLP gRPC (host)
+      - "24318:4318"   # OTLP HTTP (host)
+    # Lets the collector reach LiveProbe running on the host (T5).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      jaeger:
+        condition: service_healthy
+
+  auth:
+    <<: *service
+    command: ["/usr/local/bin/auth"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3001/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: auth
+      AUTH_PORT: "3001"
+      JWT_SECRET: dev-secret-change-me
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: shopwave
+      POSTGRES_PASSWORD: shopwave
+      POSTGRES_DB: auth
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  cart:
+    <<: *service
+    command: ["/usr/local/bin/cart"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3003/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: cart
+      CART_PORT: "3003"
+      REDIS_URL: redis://redis:6379
+      CATALOG_URL: http://catalog:3002
+      ORDER_URL: http://order:3004
+    ports:
+      - "3003:3003"
+    depends_on:
+      redis:
+        condition: service_healthy
+      catalog:
+        condition: service_started
+      order:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
+  order:
+    <<: *service
+    command: ["/usr/local/bin/order"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3004/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: order
+      ORDER_PORT: "3004"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: shopwave
+      POSTGRES_PASSWORD: shopwave
+      POSTGRES_DB: orders
+      RABBITMQ_URL: amqp://rabbitmq:5672
+    ports:
+      - "3004:3004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  catalog:
+    <<: *service
+    command: ["/usr/local/bin/catalog"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3002/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: catalog
+      CATALOG_PORT: "3002"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: shopwave
+      POSTGRES_PASSWORD: shopwave
+      POSTGRES_DB: catalog
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  gateway:
+    <<: *service
+    command: ["/usr/local/bin/gateway"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3000/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: gateway
+      GATEWAY_PORT: "3000"
+      AUTH_URL: http://auth:3001
+      CATALOG_URL: http://catalog:3002
+      CART_URL: http://cart:3003
+      ORDER_URL: http://order:3004
+    ports:
+      - "3000:3000"
+    depends_on:
+      auth:
+        condition: service_started
+      catalog:
+        condition: service_started
+      cart:
+        condition: service_started
+      order:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
+  payment-worker:
+    <<: *service
+    command: ["/usr/local/bin/payment-worker"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3005/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: payment-worker
+      PAYMENT_PORT: "3005"
+      PAYMENT_DECLINE_RATE: "0.15"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: shopwave
+      POSTGRES_PASSWORD: shopwave
+      POSTGRES_DB: payments
+      RABBITMQ_URL: amqp://rabbitmq:5672
+    ports:
+      - "3005:3005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  inventory-worker:
+    <<: *service
+    command: ["/usr/local/bin/inventory-worker"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3006/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: inventory-worker
+      INVENTORY_PORT: "3006"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: shopwave
+      POSTGRES_PASSWORD: shopwave
+      POSTGRES_DB: inventory
+      RABBITMQ_URL: amqp://rabbitmq:5672
+    ports:
+      - "3006:3006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  notification-worker:
+    <<: *service
+    command: ["/usr/local/bin/notification-worker"]
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck", "http://localhost:3007/healthz"]
+      <<: *health
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: notification-worker
+      NOTIFICATION_PORT: "3007"
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://rabbitmq:5672
+    ports:
+      - "3007:3007"
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  # Opt-in traffic generator: `docker compose --profile load up -d loadgen`
+  loadgen:
+    <<: *service
+    command: ["/usr/local/bin/loadgen"]
+    profiles: ["load"]
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: loadgen
+      TARGET_URL: http://gateway:3000
+      CONCURRENCY: "5"
+      DURATION_SECONDS: "0"
+      THINK_MS: "400"
+    depends_on:
+      gateway: { condition: service_healthy }
+      auth: { condition: service_healthy }
+      catalog: { condition: service_healthy }
+      cart: { condition: service_healthy }
+      order: { condition: service_healthy }
+      payment-worker: { condition: service_healthy }
+      inventory-worker: { condition: service_healthy }
+      notification-worker: { condition: service_healthy }
+
+volumes:
+  pgdata:

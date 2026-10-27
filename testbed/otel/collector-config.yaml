@@ -1,0 +1,35 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  # Reference trace target: Jaeger's own OTLP ingest.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  # Console echo so we can confirm spans arrive without opening the UI.
+  debug:
+    verbosity: normal
+  # LiveProbe target: OTLP/HTTP with JSON encoding (LiveProbe's normalizer reads JSON).
+  # Runs on the host; reachable via the host-gateway alias set in docker-compose.
+  otlphttp/liveprobe:
+    endpoint: http://host.docker.internal:4319
+    encoding: json
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, otlphttp/liveprobe, debug]

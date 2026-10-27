@@ -18,7 +18,7 @@ stream with per-trace sequence data, aggregate topology, per-service RED metrics
 | History: SQLite by UTC day, search, retention                 | **done**, reads databases the TS server wrote |
 | Collector: http / stdin / RabbitMQ sources, adapters          | **done**, adapters identical to TS under 20k-input fuzz |
 | UI: server-rendered Go (templ, server-built SVG, SSE live fragments) | **done** — all pages, 31 browser e2e tests |
-| Shopwave testbed in Go                                        | Phase 6                                      |
+| Shopwave testbed in Go (`testbed/`)                           | **done** — 8 services + loadgen, verified end to end |
 | Docker image, run scripts, deploy                             | Phase 7                                      |
 
 The phase checklists are in [docs/migration-plan.md](docs/migration-plan.md), and the current
@@ -33,7 +33,8 @@ The fastest way to see it working:
 ```bash
 ./dev-start.sh            # build + run on :4319 with synthetic traffic → open http://localhost:4319
 ./dev-start.sh --watch    # same, rebuilding + restarting on every .go / .templ / static change
-./dev-start.sh --testbed  # real traffic from the Shopwave Docker testbed in ../live-probing (add --chaos for failures)
+./dev-start.sh --testbed  # real traffic: the Go Shopwave testbed in Docker (add --chaos for failures)
+./dev-start.sh --ts-testbed  # the original TS testbed from ../live-probing, for side-by-side checks
 ./dev-stop.sh             # stop everything (--wipe also deletes .dev/data and the testbed volumes)
 ```
 
@@ -161,6 +162,7 @@ internal/collector/   http / stdin / RabbitMQ sources, adapters, batching sink
 internal/ui/          server-rendered UI: templ pages, /ui/live SSE stream, static assets (embedded)
 internal/ui/view/     pure view logic: health, matrix, flow layout, formatting
 e2e/                  browser tests (chromedp): the TS Playwright specs + Go-UI behaviours
+testbed/              Shopwave demo system in Go (own module) — see testbed/README.md
 tools/parity/         differential harnesses against the TS implementation
 docs/                 migration plan (the contract)
 ```

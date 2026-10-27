@@ -1,0 +1,48 @@
+# Chaos overlay — a curated failure scenario that makes LiveProbe's health/alert features show
+# real red and amber. Layer it on top of the base file (and dev overlay if you want hot reload):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.chaos.yml --profile load up -d
+#   # or simply (from the repo root): ./dev-start.sh --testbed --chaos
+#
+# `environment` maps merge across compose files, so these keys are added to each service's base
+# env. Every knob is read by the app (shared/chaos.go / shared/resilient.go) and defaults to OFF, so removing
+# this file returns the testbed to all-green.
+#
+# The scenario:
+#   - catalog is a SLOW dependency: ~35% of product reads take 1.5-2s  → cart→catalog goes amber,
+#     and (since cart's timeout is 1.2s) those reads TIME OUT and are RETRIED.
+#   - order is a FLAKY dependency: ~35% of POST /orders fail 503 (+ some latency) → cart→order goes
+#     red; after 6 consecutive failures cart's CIRCUIT BREAKER opens and sheds load off order.
+#   - gateway retries a failing downstream once and has its own (looser) breaker.
+# Net effect in LiveProbe: order red + latency/error alerts firing, catalog amber, retries showing
+# as repeated outbound spans, the dependency matrix's order column lit red.
+
+services:
+  catalog:
+    environment:
+      CATALOG_FAULT_LATENCY_MS: "1500"
+      CATALOG_FAULT_LATENCY_JITTER_MS: "500"
+      CATALOG_FAULT_LATENCY_RATE: "0.35"
+
+  order:
+    environment:
+      ORDER_FAULT_FAIL_RATE: "0.35"
+      ORDER_FAULT_FAIL_STATUS: "503"
+      ORDER_FAULT_LATENCY_MS: "250"
+      ORDER_FAULT_LATENCY_RATE: "0.30"
+
+  cart:
+    environment:
+      CART_RESILIENCE_TIMEOUT_MS: "1200"
+      CART_RESILIENCE_RETRIES: "2"
+      CART_RESILIENCE_BACKOFF_MS: "150"
+      CART_RESILIENCE_BREAKER_THRESHOLD: "6"
+      CART_RESILIENCE_BREAKER_RESET_MS: "8000"
+
+  gateway:
+    environment:
+      GATEWAY_RESILIENCE_TIMEOUT_MS: "4000"
+      GATEWAY_RESILIENCE_RETRIES: "1"
+      GATEWAY_RESILIENCE_BACKOFF_MS: "200"
+      GATEWAY_RESILIENCE_BREAKER_THRESHOLD: "12"
+      GATEWAY_RESILIENCE_BREAKER_RESET_MS: "8000"

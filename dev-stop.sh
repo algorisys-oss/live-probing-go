@@ -41,12 +41,12 @@ stop_pid loadgen
 stop_pid server
 
 if [[ -f "$DEV/testbed" ]]; then
-  TS_ROOT="$(cat "$DEV/testbed")"
-  echo "==> Tearing down the Docker testbed ($TS_ROOT/testbed)"
+  TESTBED_DIR="$(cat "$DEV/testbed")"
+  echo "==> Tearing down the Docker testbed ($TESTBED_DIR)"
   if [[ "$WIPE" == 1 ]]; then
-    ( cd "$TS_ROOT/testbed" && docker compose down -v )
+    ( cd "$TESTBED_DIR" && docker compose --profile load down -v )
   else
-    ( cd "$TS_ROOT/testbed" && docker compose down )
+    ( cd "$TESTBED_DIR" && docker compose --profile load down )
   fi
   rm -f "$DEV/testbed"
 fi

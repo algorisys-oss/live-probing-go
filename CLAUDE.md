@@ -21,7 +21,7 @@ internal/history/          SQLite history store                               [p
 internal/collector/        sources + adapters                                 [phase 4]
 internal/ui/               templ pages, /ui/live SSE, static assets (embed)   [phase 5]
 internal/ui/view/          pure view logic (health, matrix, layout, format)   [phase 5]
-testbed/                   Go Shopwave demo services                          [phase 6]
+testbed/                   Go Shopwave demo system — its own module (`shopwave`)  [phase 6]
 ```
 
 Do not scaffold empty directories ahead of the code that fills them.
@@ -37,7 +37,7 @@ Do not scaffold empty directories ahead of the code that fills them.
 
 ## Commands
 
-- `./dev-start.sh [--watch] [--testbed [--chaos]] [--no-load] [--fresh]` — build + run on :4319 with traffic;
+- `./dev-start.sh [--watch] [--testbed|--ts-testbed [--chaos]] [--no-load] [--fresh]` — build + run on :4319 with traffic;
   `./dev-stop.sh [--wipe]` stops it (pid files in `.dev/`, never pattern kills).
 - `go test -race -short ./...` — unit + integration (fast). `go test ./e2e/` — browser e2e (headless Chrome, ~80s;
   `LIVEPROBE_CHROME` to pick a binary). `go vet ./...` — lint.
@@ -54,3 +54,10 @@ Do not scaffold empty directories ahead of the code that fills them.
 - Toggle visibility with the `hidden` attribute (styles.css forces `[hidden] { display: none !important }`).
 - e2e assertions check *visibility* (`checkVisibility()`), not attributes — that is what caught the
   `[hidden]` bug. SVG elements have no `.click()`; dispatch a bubbling `MouseEvent`.
+
+## Testbed rules
+
+- `testbed/` is a separate Go module: run its tests from there (`cd testbed && go test ./...`). Its
+  dependencies (OTel SDK, pgx, go-redis, x/crypto) must never be imported by LiveProbe's module.
+- Keep span shapes LiveProbe-friendly: route-named server spans with `http.route`, `pg.query:<VERB>`
+  queries, producer/consumer spans carrying the trace across RabbitMQ.

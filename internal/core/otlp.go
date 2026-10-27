@@ -199,13 +199,15 @@ func httpName(attrs Attributes) (string, bool) {
 	return method + " " + strings.SplitN(p, "?", 2)[0], true
 }
 
-// resolvePeer finds the other side of a call: a datastore/broker if the span carries one,
+// resolvePeer finds the other side of a call: a datastore/broker if the span carries one
+// (db.system, or db.system.name from newer semconv),
 // otherwise the remote service/host. Only meaningful for client/producer/consumer spans.
 func resolvePeer(kind SpanKind, attrs Attributes) string {
 	if kind == KindServer || kind == KindInternal {
 		return ""
 	}
-	for _, key := range []string{"db.system", "messaging.system", "peer.service", "server.address", "net.peer.name", "network.peer.address", "messaging.destination.name"} {
+	// db.system.name is the OTel semconv >= 1.33 name for db.system (e.g. otelpgx emits it).
+	for _, key := range []string{"db.system", "db.system.name", "messaging.system", "peer.service", "server.address", "net.peer.name", "network.peer.address", "messaging.destination.name"} {
 		if v, ok := attrString(attrs, key); ok {
 			return v
 		}
