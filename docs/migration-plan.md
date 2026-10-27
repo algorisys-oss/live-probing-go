@@ -12,13 +12,13 @@ against it; do not rubber-stamp.
 | server (OTLP + native ingest, REST, WebSocket, alerts, webhook) | `packages/server` (node:http, ws) | `internal/server` + `cmd/liveprobe` |
 | history (SQLite day-partitioned store) | `node:sqlite` | `internal/history` — `modernc.org/sqlite` (pure Go, no cgo) — **same schema**, existing `.db` files stay readable |
 | collector (http/stdin/RabbitMQ sources, adapters) | `packages/collector` (amqplib) | `internal/collector` + `cmd/liveprobe-collector` — `rabbitmq/amqp091-go` |
-| UI | React + zustand + Vite SPA | **Server-rendered Go**: `templ` components + `htmx`, server-built SVG for diagrams, a small vanilla-JS live client (WebSocket → swap fragments / rAF-batched SVG patch). Assets embedded with `go:embed` → one binary. |
+| UI | React + zustand + Vite SPA | **Server-rendered Go**: `templ` components, server-built SVG, a small vanilla-JS live client (SSE → pre-rendered fragments applied in one rAF batch). No htmx (nothing needs it). Assets embedded with `go:embed` → one binary. |
 | testbed (Shopwave demo services) | `testbed/` (TS) | **Later phase**: Go services using the OTel Go SDK |
-| e2e | Playwright (TS) | Go browser tests (`playwright-go` or `chromedp`) — chosen in Phase 5 |
+| e2e | Playwright (TS) | Go browser tests with `chromedp` (drives a local Chrome; skipped when absent) |
 | packaging | Node Docker image, bash scripts, `deploy.js` | static binary in a distroless image; bash scripts kept; `deploy` as a Go cmd |
 
-"100% Go" caveat, stated plainly: the browser still executes a little JavaScript (htmx and the
-live client). Everything that *runs on a server or is authored as application logic* is Go.
+"100% Go" caveat, stated plainly: the browser still executes a little JavaScript (the ~400-line
+live client, no framework). Everything that *runs on a server or is authored as application logic* is Go.
 
 ## Conventions
 
@@ -26,7 +26,7 @@ live client). Everything that *runs on a server or is authored as application lo
 - File names stay lowercase-hyphenated (`trace-window.go`). Tests are `trace-window_test.go`
   (the `_test` suffix is mandated by Go; it is the only underscore allowed).
 - Minimal deps (LOOPS VIII). Approved so far: `modernc.org/sqlite`, `github.com/coder/websocket`,
-  `github.com/rabbitmq/amqp091-go`, `github.com/a-h/templ`. Anything else needs a written reason here.
+  `github.com/rabbitmq/amqp091-go`, `github.com/a-h/templ` (+ `chromedp` for e2e, Phase 5). Anything else needs a written reason here.
 - TDD: port the TS test first, see it fail, make it green. The TS suites are the parity oracle.
 - **Wire compatibility**: JSON field names on `/v1/*`, `/api/*` and `/ws` messages are identical
   to the TS server, so the TS UI, collector, and e2e suite can be pointed at the Go server as a
@@ -38,13 +38,29 @@ live client). Everything that *runs on a server or is authored as application lo
 2. **Ordering**: JS `Map` iterates in insertion order; Go maps don't. `TraceWindow` keeps
    insertion sequence numbers so topology nodes/edges, trace ids and span lists come out in the
    same order the TS version produces.
-3. **Rounding**: JS `Math.round` rounds .5 toward +∞ and `toFixed` rounds ties up; helpers
-   `jsRound`/`toFixed` reproduce that, so alert messages and averages match byte-for-byte.
+3. **Number formatting is reproduced, not approximated**: `core.ParseJSNumber` (StringToNumber),
+   `core.FormatJSNumber` (Number::toString), `core.ToFixed` (exact-decimal `toFixed`, ties up) and
+   `jsRound` (`Math.round`) implement the ECMAScript algorithms, so every label matches byte-for-byte.
 4. **Native-ingest attributes** are filtered to scalar values (string/number/bool). TS passes
    nested objects through unchecked, which contradicts its own type; Go enforces the type.
-5. `localeCompare` on span ids → byte-wise compare. Identical for hex/ASCII ids.
+5. `localeCompare` on span ids → byte-wise compare (identical for hex/ASCII ids). For displayed
+   attribute keys the UI uses an ICU-order comparator (`ui.icuLess`) that matches for ASCII keys.
 6. Regex `\s` is ASCII-only in Go RE2 (JS also matches Unicode spaces) — affects only the
    Bearer-token mask on exotic whitespace.
+7. **WS backpressure**: a `/ws` (or `/ui/live`) client whose 256-message buffer is full is disconnected;
+   it reconnects and gets a fresh snapshot. The TS `ws` server buffered without bound.
+8. **`attrs_text`** (attribute-search column) lists keys sorted per span, not in insertion order —
+   only matters when a trace exceeds the 400-pair cap.
+9. **V8 legacy `Date.parse` heuristics** (bare numbers like `"200"` → year 200, `"12"` → Dec 2001) are not
+   reproduced; such strings parse to 0. Ingest clamps both outcomes to the same start time. ISO-8601,
+   RFC 1123, `Date#toString()`, Java `+0000` offsets and common `YYYY/MM/DD`, `MM/DD/YYYY`,
+   `May 28, 2026` forms match V8 (fuzz-verified).
+10. **Out-of-range times saturate** at the int64 range in the collector (JS keeps e.g. 1e24); ingest
+    clamps both to the same ceiling.
+11. **UI routing**: an unknown path redirects to `/` (as React's catch-all did); a missing trace answers
+    **HTTP 404** with the not-found page (the SPA answered 200).
+12. **Header trace counter** shows the live window's recent traces (≤ 200) server-side; React counted the
+    summaries its store had seen (≤ 200). Same number in steady state.
 
 ## Phases
 
@@ -106,16 +122,34 @@ Oracle: `sources/*.test.ts`, `adapters/*.test.ts`.
       The fuzz found and fixed 3 real divergences (JS `String(1e21)`, `Number("0x10")`, int64 overflow) —
       `core.ParseJSNumber`/`FormatJSNumber` now implement the ECMAScript algorithms for all of ingest.
 
-### Phase 5 — UI (server-rendered, `internal/ui`)
+### Phase 5 — UI (server-rendered, `internal/ui`) — in progress
 Oracle: the TS UI behaviour + `e2e/*.spec.ts`, `ui/src/lib/*.test.ts`.
-- [ ] port pure UI logic to Go: topology-health, dependency-matrix, layout (flow), format, latency buckets
-- [ ] layout shell + header (nav, alert badge, theme toggle), styles (`styles.css` reused)
-- [ ] pages: live (RED tiles, flow graph ⇄ matrix), trace (sequence, waterfall, critical path, export),
-      search, history, day, service, errors, alerts, compare
-- [ ] server-built SVG: sequence, flow, waterfall, flamegraph, histogram, heatmap, throughput/latency/trends charts
-- [ ] live client: WS → batched rAF updates (LOOPS XXXIX), no full-page reloads
-- [ ] diagram export (Mermaid / SVG download)
-- [ ] e2e ported to Go; all scenarios from `e2e/*.spec.ts` pass
+
+Design (decided 2026-10-27):
+- Pages are templ components rendered in Go from the same in-process state the API serves (the UI
+  implements against a `ui.Backend` interface; the server implements it — no import cycle).
+- Live updates: `/ui/live` (SSE) pushes **pre-rendered HTML fragments** per client view; a ~400-line
+  vanilla `static/live.js` applies them in one rAF batch (LOOPS XXXIX). Layout, health colouring and all
+  SVG geometry are Go. `/ws` JSON stays for API clients.
+- View state lives in the URL (`?service=&view=&metric=`, `?tab=&expand=`, `#spanId`), so views are
+  shareable and changing one is a plain navigation. Only zoom/pan, pause and waterfall collapse are client-side.
+- No htmx (nothing needs it yet — LOOPS VIII). `templ` pinned via `go tool`; generated `*_templ.go` committed
+  (`go generate ./internal/ui`). `styles.css` reused verbatim (+ a 6-line link-reset for URL-driven toggles).
+
+- [x] pure UI logic in `internal/ui/view`: topology health, dependency matrix, flow layout, format —
+      TS tests ported + differential vs TS (1,500 random topologies, 3,000 durations): identical
+- [x] `core.ToFixed` = spec-exact `Number#toFixed` (exact-decimal rounding, ties up) — used by every label
+- [x] shell + header (nav, live status pill, alert badge, counters, search, theme toggle)
+- [x] live page: trace list (sorted, capped, flash, pause), RED tiles, flow graph (zoom/pan/fit, health,
+      ghosts, export mmd/svg/png), dependency matrix (metric toggle), service filter — 20 browser checks
+- [x] trace page: waterfall (self-time, critical path, collapse), span detail (ICU attribute order),
+      sequence diagram (activations, N+1 groups expand/collapse), deep-link selection, copy mermaid,
+      not-found — 16 browser checks; side-by-side screenshots match the React UI
+- [ ] history, day (throughput/latency charts, histogram, heatmap, flamegraph), search, errors, alerts,
+      service, compare pages
+- [ ] e2e as Go tests (decision: `chromedp`, gated on a Chrome binary) covering `e2e/*.spec.ts` + the
+      scratch checks above
+- [ ] remove `PUBLIC_DIR` once every page is ported
 
 ### Phase 6 — testbed in Go (`testbed/`)
 - [ ] shared lib (OTel Go SDK setup, chaos + resilient fetch, pg/redis/amqp helpers) with tests

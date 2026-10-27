@@ -18,7 +18,8 @@ internal/core/             event model, window, projections, masking, export  [p
 internal/server/           HTTP/WS server                                     [phase 2]
 internal/history/          SQLite history store                               [phase 3]
 internal/collector/        sources + adapters                                 [phase 4]
-internal/ui/               templ components, static assets (go:embed)         [phase 5]
+internal/ui/               templ pages, /ui/live SSE, static assets (embed)   [phase 5]
+internal/ui/view/          pure view logic (health, matrix, layout, format)   [phase 5]
 testbed/                   Go Shopwave demo services                          [phase 6]
 ```
 
@@ -37,3 +38,12 @@ Do not scaffold empty directories ahead of the code that fills them.
 
 - `go test -race ./...` — all tests. `go vet ./...` — lint.
 - `go build -o liveprobe ./cmd/liveprobe && ./liveprobe` — server (env: see `cmd/liveprobe/main.go`).
+- `go generate ./internal/ui` — regenerate templ output after editing `*.templ` (commit the `*_templ.go`).
+
+## UI rules
+
+- Every number a label prints goes through `core.FormatJSNumber` / `core.ToFixed` / `view.FormatMicros`
+  (spec-exact JS formatting) so the Go UI prints exactly what the React UI did.
+- View state belongs in the URL; the browser script only does zoom/pan, pause, collapse and selection.
+- Live fragments are rendered by the same templ components as the initial page — never two templates
+  for one region.

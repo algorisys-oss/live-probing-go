@@ -13,10 +13,7 @@ import (
 )
 
 // FiringAlert is an active alert stamped with when it started firing (epoch ms).
-type FiringAlert struct {
-	core.Alert
-	Since int64 `json:"since"`
-}
+type FiringAlert = core.FiringAlert
 
 type WebhookOptions struct {
 	URL      string

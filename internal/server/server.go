@@ -30,10 +30,11 @@ import (
 
 	"liveprobe/internal/core"
 	"liveprobe/internal/history"
+	"liveprobe/internal/ui"
 )
 
 type Options struct {
-	PublicDir     string // static UI to serve, if any
+	PublicDir     string // serve a built UI from disk instead of the Go UI (migration aid)
 	DBPath        string // sqlite history db; ":memory:" (default) or a file path
 	MaxTraces     int    // live window cap; default 2000
 	HorizonMicros int64  // live window horizon; default 5 min
@@ -69,8 +70,10 @@ type Server struct {
 	store  *history.Store
 	mask   *core.MaskOptions
 
-	clientsMu sync.Mutex
-	clients   map[*client]bool
+	clientsMu   sync.Mutex
+	clients     map[*client]bool
+	subscribers map[chan ui.Event]bool // in-process live consumers (the UI)
+	ui          http.Handler
 
 	topologyDirty atomic.Bool
 
@@ -111,6 +114,7 @@ func New(o Options) (*Server, error) {
 		window:      core.NewTraceWindow(core.WindowOptions{MaxTraces: o.MaxTraces, HorizonMicros: o.HorizonMicros}),
 		store:       store,
 		clients:     map[*client]bool{},
+		subscribers: map[chan ui.Event]bool{},
 		pending:     map[string]*core.AssembledTrace{},
 		activeSince: map[string]int64{},
 		ctx:         ctx,
@@ -125,6 +129,7 @@ func New(o Options) (*Server, error) {
 	if o.AlertWebhook != nil && o.AlertWebhook.URL != "" {
 		s.notifier = NewWebhookNotifier(*o.AlertWebhook)
 	}
+	s.ui = ui.Handler(s)
 
 	retention := 30
 	if o.RetentionDays != nil {
@@ -184,6 +189,10 @@ func (s *Server) Close() error {
 		for c := range s.clients {
 			delete(s.clients, c) // only clients still in the map are ever sent to
 			c.close()
+		}
+		for ch := range s.subscribers {
+			delete(s.subscribers, ch)
+			close(ch)
 		}
 		s.clientsMu.Unlock()
 		if s.http != nil {
@@ -249,6 +258,7 @@ func (s *Server) ingest(raw []core.Event) {
 	}
 	if len(summaries) > 0 {
 		s.broadcast(map[string]any{"type": "traces", "traces": summaries})
+		s.publish(ui.Event{Traces: summaries})
 	}
 	s.topologyDirty.Store(true)
 }
@@ -315,44 +325,99 @@ func (s *Server) computeAlerts(edges []core.Edge, red []core.RedMetric) []Firing
 	return out
 }
 
-// liveState is the topology + RED + alerts payload shared by the snapshot and the tick.
-func (s *Server) liveState(msgType string) map[string]any {
+// LiveState computes topology + RED + alerts once; the snapshot, the tick and UI subscribers all
+// share it, so alert evaluation (and its webhook side effect) happens once per computation.
+func (s *Server) LiveState() ui.LiveState {
 	topology := s.window.Topology()
 	red := core.RedMetrics(s.window.AssembleAll())
-	return map[string]any{
-		"type":        msgType,
-		"topology":    topology,
-		"mermaidFlow": core.ToMermaidFlow(topology),
-		"red":         red,
-		"alerts":      s.computeAlerts(topology.Edges, red),
-	}
+	return ui.LiveState{Topology: topology, MermaidFlow: core.ToMermaidFlow(topology), Red: red, Alerts: s.computeAlerts(topology.Edges, red)}
+}
+
+func liveMessage(msgType string, st ui.LiveState) map[string]any {
+	return map[string]any{"type": msgType, "topology": st.Topology, "mermaidFlow": st.MermaidFlow, "red": st.Red, "alerts": st.Alerts}
 }
 
 func (s *Server) tick() {
 	if !s.topologyDirty.Swap(false) {
 		return
 	}
-	s.broadcast(s.liveState("topology"))
+	st := s.LiveState()
+	s.broadcast(liveMessage("topology", st))
+	s.publish(ui.Event{Live: &st})
 }
 
-type operationStat struct {
-	Operation string `json:"operation"`
-	Calls     int    `json:"calls"`
-	Errors    int    `json:"errors"`
-	AvgMicros int64  `json:"avgMicros"`
+// RecentTraces are the newest live-window summaries.
+func (s *Server) RecentTraces(limit int) []core.TraceSummary {
+	return s.recentSummaries(float64(limit))
 }
 
-// serviceDetail is the per-service view from the live window: deps (from the topology graph) and
-// the service's own operations and error rate.
-func (s *Server) serviceDetail(name string) map[string]any {
-	topology := s.window.Topology()
-	inbound, outbound := []string{}, []string{}
-	for _, e := range topology.Edges {
-		if e.To == name && !slices.Contains(inbound, e.From) {
-			inbound = append(inbound, e.From)
+// TraceDetail is a trace from the live window, falling back to history; nil when unknown.
+func (s *Server) TraceDetail(id string) (*core.TraceDetail, error) {
+	if t := s.window.Assemble(id); t != nil {
+		d := core.Detail(t)
+		return &d, nil
+	}
+	raw, err := s.store.GetDetail(id)
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	var d core.TraceDetail
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// History is the persistent store, for the UI's day/search/error views.
+func (s *Server) History() *history.Store {
+	s.flushHistory() // read-your-writes, as for /api reads
+	return s.store
+}
+
+// Subscribe streams live updates to an in-process consumer (the UI). The channel is closed if the
+// consumer falls too far behind (it should then resubscribe and re-render from scratch).
+func (s *Server) Subscribe() (<-chan ui.Event, func()) {
+	ch := make(chan ui.Event, clientBuffer)
+	s.clientsMu.Lock()
+	s.subscribers[ch] = true
+	s.clientsMu.Unlock()
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			s.clientsMu.Lock()
+			if s.subscribers[ch] {
+				delete(s.subscribers, ch)
+				close(ch)
+			}
+			s.clientsMu.Unlock()
+		})
+	}
+}
+
+func (s *Server) publish(ev ui.Event) {
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+	for ch := range s.subscribers {
+		select {
+		case ch <- ev:
+		default: // too slow: drop it; it resubscribes and re-renders
+			delete(s.subscribers, ch)
+			close(ch)
 		}
-		if e.From == name && !slices.Contains(outbound, e.To) {
-			outbound = append(outbound, e.To)
+	}
+}
+
+// ServiceDetail is the per-service view from the live window: deps (from the topology graph) and
+// the service's own operations and error rate.
+func (s *Server) ServiceDetail(name string) core.ServiceDetail {
+	topology := s.window.Topology()
+	d := core.ServiceDetail{Name: name, Inbound: []string{}, Outbound: []string{}}
+	for _, e := range topology.Edges {
+		if e.To == name && !slices.Contains(d.Inbound, e.From) {
+			d.Inbound = append(d.Inbound, e.From)
+		}
+		if e.From == name && !slices.Contains(d.Outbound, e.To) {
+			d.Outbound = append(d.Outbound, e.To)
 		}
 	}
 	type acc struct {
@@ -361,13 +426,12 @@ func (s *Server) serviceDetail(name string) map[string]any {
 	}
 	ops := map[string]*acc{}
 	var order []string
-	spans, errs := 0, 0
 	for _, t := range s.window.AssembleAll() {
 		for _, e := range t.Events {
 			if e.Participant != name {
 				continue
 			}
-			spans++
+			d.Spans++
 			o := ops[e.Operation]
 			if o == nil {
 				o = &acc{}
@@ -377,23 +441,22 @@ func (s *Server) serviceDetail(name string) map[string]any {
 			o.calls++
 			o.dur += e.Duration
 			if e.Status == core.StatusError {
-				errs++
+				d.Errors++
 				o.errors++
 			}
 		}
 	}
-	operations := make([]operationStat, 0, len(order))
+	d.Operations = make([]core.ServiceOperation, 0, len(order))
 	for _, op := range order {
 		o := ops[op]
-		operations = append(operations, operationStat{op, o.calls, o.errors, int64(math.Floor(float64(o.dur)/float64(o.calls) + 0.5))})
+		d.Operations = append(d.Operations, core.ServiceOperation{Operation: op, Calls: o.calls, Errors: o.errors, AvgMicros: int64(math.Floor(float64(o.dur)/float64(o.calls) + 0.5))})
 	}
-	slices.SortStableFunc(operations, func(a, b operationStat) int { return cmp.Compare(b.Calls, a.Calls) })
-	operations = operations[:min(30, len(operations))]
-	rate := 0.0
-	if spans > 0 {
-		rate = float64(errs) / float64(spans)
+	slices.SortStableFunc(d.Operations, func(a, b core.ServiceOperation) int { return cmp.Compare(b.Calls, a.Calls) })
+	d.Operations = d.Operations[:min(30, len(d.Operations))]
+	if d.Spans > 0 {
+		d.ErrorRate = float64(d.Errors) / float64(d.Spans)
 	}
-	return map[string]any{"name": name, "spans": spans, "errors": errs, "errorRate": rate, "inbound": inbound, "outbound": outbound, "operations": operations}
+	return d
 }
 
 // --- websocket -----------------------------------------------------------------------------
@@ -446,7 +509,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	// Snapshot and registration happen under the lock so no broadcast slips in between: the
 	// snapshot is always the first message and nothing after it is missed.
 	s.clientsMu.Lock()
-	snap := s.liveState("snapshot")
+	snap := liveMessage("snapshot", s.LiveState())
 	snap["traces"] = s.recentSummaries(100)
 	if data, err := marshal(snap); err == nil {
 		c.send <- data
@@ -600,7 +663,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, path string) erro
 		if err != nil {
 			return err
 		}
-		writeJSON(w, 200, s.serviceDetail(name))
+		writeJSON(w, 200, s.ServiceDetail(name))
 	case get && path == "/api/errors":
 		groups, err := s.store.ErrorGroups(int(positiveOr(jsNumber(q, "limit", "100"), 100)))
 		if err != nil {
@@ -622,8 +685,10 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request, path string) erro
 			return err
 		}
 		return s.dayRoute(w, q, day, m[2])
-	case get:
+	case get && s.opts.PublicDir != "":
 		s.serveStatic(w, r.URL.Path)
+	case get:
+		s.ui.ServeHTTP(w, r)
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not_found"})
 	}

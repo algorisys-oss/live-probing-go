@@ -6,7 +6,6 @@ package core
 
 import (
 	"math"
-	"strconv"
 	"time"
 )
 
@@ -97,11 +96,7 @@ func jsRound(x float64) float64 {
 	return math.Floor(x + 0.5)
 }
 
-// toFixed reproduces Number.prototype.toFixed for display strings (ties round up).
-func toFixed(x float64, digits int) string {
-	p := math.Pow10(digits)
-	return strconv.FormatFloat(math.Floor(x*p+0.5)/p, 'f', digits, 64)
-}
+func toFixed(x float64, digits int) string { return ToFixed(x, digits) }
 
 // jsNumberString formats a float the way String(n) does.
 func jsNumberString(x float64) string { return FormatJSNumber(x) }

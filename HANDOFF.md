@@ -5,38 +5,41 @@ Repo: https://github.com/algorisys-oss/live-probing-go (`dev` is the working bra
 to it — same workflow as `live-probing`'s CONTRIBUTING.md).
 
 ## Last task
-**Phase 4 — collector (2026-10-27).** (Phases 0–3 — plan, core, server, history — done earlier the same day.)
-- `internal/collector`: sources (http, stdin NDJSON, RabbitMQ via `amqp091-go` behind a small
-  `Conn`/`Channel`/`Delivery` interface with reconnect/backoff), adapters (`adapter-id-1`,
-  `algo-instrumentation`, `liveprobe-native`), batching `Sink`. `cmd/liveprobe-collector` with TS env parity.
-- All TS collector tests ported + extras; **real RabbitMQ 3.13 integration test** passes, including a
-  broker-forced disconnect and reconnect.
-- **Adapter fuzz vs TS (20k inputs)**: identical except documented deltas. It caught 3 real bugs, fixed by
-  new `core.ParseJSNumber` / `FormatJSNumber` / `SaturatingMicros` (spec-exact JS coercions, now used
-  by all ingest paths and history's `attrs_text`).
-- Also earlier today: server + history verified route-for-route against the TS server, and the React UI
-  runs on the Go binary.
+**Phase 5, slice 1 — server-rendered UI: live page + trace page (2026-10-27).**
+- Design (see plan): templ pages; `/ui/live` SSE pushes pre-rendered HTML fragments per client view;
+  `static/live.js` (vanilla, ~400 lines) applies them in one rAF batch; view state in the URL.
+- `internal/ui/view`: health, matrix, layout, format — TS tests ported + **differential vs TS identical**
+  (1,500 topologies / 3,000 durations; `tools/parity/view-parity.mts`).
+- `core.ToFixed`: spec-exact `Number#toFixed` (Node-verified cases).
+- Server: `ui.Backend` implemented (`LiveState`, `Subscribe`, `TraceDetail`, `ServiceDetail`, `History`);
+  the tick computes live state once and fans out to `/ws` and UI subscribers. `FiringAlert` and
+  `ServiceDetail` moved to `core`. Non-API GETs go to the Go UI unless `PUBLIC_DIR` is set.
+- **Live page** and **trace page** done; verified in headless Chrome against live traffic (20 + 16 checks)
+  and side-by-side screenshots with the React UI (pixel-near-identical).
+- 144 Go tests, race-clean.
 
 ## How to run / verify
-- `go test -race ./...` · `go vet ./...`
-- `go build ./cmd/...` → `liveprobe` (server) + `liveprobe-collector`.
-- Parity harnesses (core, server, adapters): `tools/parity/README.md`.
+- `go test -race ./...` · `go vet ./...` · `go generate ./internal/ui` after editing `*.templ`.
+- `go build -o liveprobe ./cmd/liveprobe && PORT=4319 DB_PATH=:memory: ./liveprobe`, open http://localhost:4319.
+- Browser checks used so far live in the session scratchpad (Playwright, headless Chrome); they become
+  Go `chromedp` tests in the e2e step.
 
 ## Next
-**Phase 5 — server-rendered UI** (`internal/ui`): templ + htmx, server-built SVG, small vanilla live
-client. Start by porting the pure UI logic with its tests (`../live-probing/packages/ui/src/lib/`:
-topology-health, dependency-matrix, layout, format, sequence-layout is already in core), then the shell
-+ live page, then trace page, then the rest. Decide `templ` codegen workflow (commit generated files or
-`go generate` in CI) and the Go e2e driver (playwright-go vs chromedp) at the start.
+1. Remaining pages: alerts (simplest), errors, search, history, day (throughput/latency charts,
+   histogram, heatmap, flamegraph), service, compare. TS sources: `../live-probing/packages/ui/src/pages/`.
+2. Go e2e with `chromedp` (gated on Chrome) porting `e2e/*.spec.ts` + the scratch checks.
+3. Drop `PUBLIC_DIR` once every page is ported. Then Phase 6 (testbed) / 7 (packaging).
 
 ## Gotchas
 - **Never point a server at the real `../live-probing/packages/server/data/liveprobe.db`** without
   `RETENTION_DAYS=0` — its July 2026 data would be pruned at startup. Use a sample copy.
-- The Playwright MCP browser crashes on this machine; headless Chrome via a playwright script works.
-- `pkill -f <pattern>` from the Bash tool can kill the tool's own shell; use `pkill -x liveprobe` or a
-  bracketed pattern like `'[t]sx packages/server'`.
-- A far-future event (clamped to now+60s) legitimately evicts older traces from the live window.
-- Layout **function** `LayoutSequence`, **type** `SequenceLayout`; time is `int64` micros; `RetentionDays`
-  is `*int`; `MaskOptions.SkipIdentityFields` inverts TS `maskIdentityFields`.
-- tsx compiles `.ts` here as CJS (no package.json): harness scripts that use top-level await are `.mts`.
-- A throwaway broker for the integration test: `docker run -d --rm --name lp-go-rabbit-test -p 5699:5672 rabbitmq:3.13-alpine`.
+- Playwright MCP browser crashes on this machine; use headless `chromium.launch({channel:"chrome"})`.
+- **`pkill -f <pattern>` kills the Bash tool's own shell whenever the pattern text appears anywhere in
+  that command** (even later in the script). Put kills in their own Bash call; prefer `pkill -x liveprobe`.
+- Pre-existing TS UI bug kept for parity: flow-graph arrowheads scale with edge stroke width
+  (`markerUnits` default), so busy edges get huge heads. Fix in both or neither.
+- Playwright `text=errors` is case-insensitive and hits the **Errors** nav link — scope selectors.
+- The UI's `sequence-layout.ts` is the core algorithm verbatim → `core.LayoutSequence` serves the diagram.
+- A missing trace returns HTTP 404 (the SPA returned 200) — Chrome logs it as a console error; expected.
+- Earlier gotchas still apply: `LayoutSequence` (func) vs `SequenceLayout` (type); time is `int64` micros;
+  `RetentionDays` is `*int`; tsx compiles `.ts` here as CJS → harness scripts are `.mts`.

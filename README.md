@@ -17,7 +17,7 @@ stream with per-trace sequence data, aggregate topology, per-service RED metrics
 | Server: ingest, REST, `/ws`, CORS/origin policy, alert webhook | **done**, every route identical to TS server |
 | History: SQLite by UTC day, search, retention                 | **done**, reads databases the TS server wrote |
 | Collector: http / stdin / RabbitMQ sources, adapters          | **done**, adapters identical to TS under 20k-input fuzz |
-| UI: server-rendered Go (templ + htmx, server-built SVG)       | next (Phase 5)                               |
+| UI: server-rendered Go (templ, server-built SVG, SSE live fragments) | **in progress**: live + trace pages done |
 | Shopwave testbed in Go                                        | Phase 6                                      |
 | Docker image, run scripts, deploy                             | Phase 7                                      |
 
@@ -50,14 +50,18 @@ To send traces from an OpenTelemetry-instrumented app, configure an OTel collect
 **OTLP/HTTP JSON** to `http://<host>:4319/v1/traces`. Integration is the same as for the TS
 server; see [../live-probing/docs/integrating-your-app.md](../live-probing/docs/integrating-your-app.md).
 
-### UI (until Phase 5)
+### UI
 
-The Go UI doesn't exist yet. Meanwhile the Go server can host the existing React UI, built from
-the TS repo:
+Open `http://localhost:4319`. The UI is rendered by the Go binary (no Node, no build step): the
+live view (trace feed, RED tiles, health-coloured flow graph ⇄ dependency matrix) and the trace page
+(waterfall with critical path, sequence diagram with N+1 grouping) are done; the history, day,
+search, errors, alerts, service and compare pages are still being ported.
+
+Until they are, the Go server can host the existing React UI instead:
 
 ```bash
 (cd ../live-probing && npm ci && npm run build -w @liveprobe/ui)
-PUBLIC_DIR=../live-probing/packages/ui/dist PORT=4319 ./liveprobe   # open http://localhost:4319
+PUBLIC_DIR=../live-probing/packages/ui/dist PORT=4319 ./liveprobe
 ```
 
 ## Configuration
@@ -136,6 +140,8 @@ internal/core/        event model and every pure projection of it (stdlib only)
 internal/history/     SQLite history store (same schema as TS)
 internal/server/      HTTP + WebSocket server, alert webhook
 internal/collector/   http / stdin / RabbitMQ sources, adapters, batching sink
+internal/ui/          server-rendered UI: templ pages, /ui/live SSE stream, static assets (embedded)
+internal/ui/view/     pure view logic: health, matrix, flow layout, formatting
 tools/parity/         differential harnesses against the TS implementation
 docs/                 migration plan (the contract)
 ```
@@ -145,6 +151,7 @@ docs/                 migration plan (the contract)
 ```bash
 go test -race ./...     # unit + integration tests (all TS suites ported)
 go vet ./...
+go generate ./internal/ui   # after editing *.templ (generated *_templ.go files are committed)
 ```
 
 The TS implementation is the oracle. Each TS test suite is ported before the code it covers.

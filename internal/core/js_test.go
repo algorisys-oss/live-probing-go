@@ -48,3 +48,21 @@ func TestSaturatingMicros(t *testing.T) {
 		t.Error("saturation")
 	}
 }
+
+func TestToFixed(t *testing.T) {
+	// Expected values captured from Node (x.toFixed(d)).
+	cases := []struct {
+		x    float64
+		d    int
+		want string
+	}{
+		{1.005, 2, "1.00"}, {1.25, 1, "1.3"}, {2.5, 0, "3"}, {-1.25, 1, "-1.3"}, {0.000001, 7, "0.0000010"},
+		{-0.0001, 2, "-0.00"}, {123.456, 1, "123.5"}, {8.345, 2, "8.35"}, {1.45, 1, "1.4"}, {0.5, 0, "1"},
+		{1.5, 0, "2"}, {10.235, 2, "10.23"}, {1e21, 2, "1e+21"}, {99.95, 1, "100.0"}, {0.05, 1, "0.1"},
+	}
+	for _, c := range cases {
+		if got := ToFixed(c.x, c.d); got != c.want {
+			t.Errorf("ToFixed(%v, %d) = %q, want %q", c.x, c.d, got, c.want)
+		}
+	}
+}

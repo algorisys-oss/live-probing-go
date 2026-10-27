@@ -1,0 +1,220 @@
+package ui
+
+import (
+	"liveprobe/internal/ui/view"
+	"net/url"
+)
+
+// headerFor is the header for a non-live page; the /ui/live stream keeps it current.
+func headerFor(b Backend, active string) headerState {
+	st := b.LiveState()
+	return headerState{Active: active, Traces: len(b.RecentTraces(maxListedTraces)), Services: len(st.Topology.Nodes),
+		Alerts: len(st.Alerts), AlertSeverity: alertSeverity(st.Alerts)}
+}
+
+func pageStream(active string) string { return "/ui/live?page=" + url.QueryEscape(active) }
+
+func tabHref(id, tab string) string {
+	if tab == "waterfall" {
+		return traceHref(id)
+	}
+	return traceHref(id) + "?tab=" + tab
+}
+
+func tabClass(active bool) string {
+	if active {
+		return "tab tab-active"
+	}
+	return "tab"
+}
+
+templ tracePageView(d traceData) {
+	@page("LiveProbe · trace", d.Header, pageStream("")) {
+		<div class="trace-page" id="lp-trace" data-trace={ d.ID } data-selected={ d.Selected }>
+			<div class="trace-page-bar">
+				<a href="/" class="back-link">← Live</a>
+				<a href={ templ.SafeURL("/compare?a=" + url.QueryEscape(d.ID)) } class="back-link compare-link">compare ⇄</a>
+			</div>
+			if d.Err != "" {
+				<div class="empty-hint error-text">Failed to load: { d.Err }</div>
+			} else if d.Detail == nil {
+				<div class="empty-hint">Trace not found — it may have aged out of the live window.</div>
+			} else {
+				<div class="seq-summary">
+					<div class="seq-summary-op">{ d.Detail.Summary.RootOperation }</div>
+					<div class="seq-summary-meta">
+						<span>{ view.Itoa(len(d.Detail.Summary.Services)) } services</span>
+						<span>·</span>
+						<span>{ view.Itoa(d.Detail.Summary.SpanCount) } spans</span>
+						<span>·</span>
+						<span>{ view.Micros(d.Detail.Summary.DurationMicros) }</span>
+						if d.Detail.Summary.HasError {
+							<span class="badge badge-error">error</span>
+						}
+					</div>
+					<div class="seq-summary-services">
+						for _, s := range d.Detail.Summary.Services {
+							<span class="chip">{ s }</span>
+						}
+					</div>
+				</div>
+				<div class="tabs">
+					<a class={ tabClass(d.Tab == "waterfall") } href={ templ.SafeURL(tabHref(d.ID, "waterfall")) } data-keep-hash>Waterfall</a>
+					<a class={ tabClass(d.Tab == "sequence") } href={ templ.SafeURL(tabHref(d.ID, "sequence")) } data-keep-hash>Sequence</a>
+					<button class="tab-export" title="Copy the sequence diagram as Mermaid" data-copy={ d.Mermaid }>copy mermaid</button>
+				</div>
+				<div class="trace-body">
+					<div class="trace-view">
+						if d.Tab == "waterfall" {
+							@waterfallView(d.Waterfall)
+						} else {
+							@sequenceView(d.Sequence)
+						}
+					</div>
+					<div id="lp-span-detail">
+						if d.Span != nil {
+							@spanPanel(*d.Span)
+						}
+					</div>
+				</div>
+			}
+		</div>
+	}
+}
+
+templ waterfallView(w waterfall) {
+	if w.Empty {
+		<div class="empty-hint">Waterfall not available for this trace (recorded before span capture). Try the Sequence tab.</div>
+	} else {
+		<div class="waterfall">
+			<div class="wf-axis">
+				<div class="wf-axis-gutter" style="width:280px">
+					<span class="wf-axis-hint">▚ self-time · ◆ critical path</span>
+				</div>
+				<div class="wf-axis-track">
+					for _, t := range w.Ticks {
+						<span class="wf-tick-label" style={ "left:" + t.Left }>{ t.Label }</span>
+					}
+				</div>
+			</div>
+			<div class="wf-body">
+				<div class="wf-grid" style="left:280px">
+					for _, t := range w.Ticks {
+						<span class="wf-gridline" style={ "left:" + t.Left }></span>
+					}
+				</div>
+				<div class="wf-rows">
+					for _, r := range w.Rows {
+						<div class={ r.Class } data-span={ r.SpanID } data-depth={ view.Itoa(r.Depth) } data-hidden={ view.Itoa(r.Hidden) }>
+							<div class="wf-label" style={ "padding-left:" + r.PadLeft + "px" }>
+								for _, rail := range r.Rails {
+									<span class="wf-rail" style={ "left:" + rail + "px" }></span>
+								}
+								if r.HasChildren {
+									<button class="wf-toggle" title="Collapse subtree">▾</button>
+								} else {
+									<span class="wf-toggle wf-toggle-leaf"></span>
+								}
+								if r.Critical {
+									<span class="wf-critical-mark" title="on the critical path">◆</span>
+								}
+								<span class="wf-dot" style={ "background:" + r.Color }></span>
+								<span class="wf-label-op" title={ r.Title }>{ r.Op }</span>
+								<span class="wf-hidden-count" hidden>+{ view.Itoa(r.Hidden) }</span>
+							</div>
+							<div class="wf-track">
+								<div class={ r.BarClass } style={ r.BarStyle }></div>
+								for _, c := range r.Coverage {
+									<div class="wf-bar-childtime" style={ "left:" + c.Left + ";width:" + c.Width }></div>
+								}
+								<span class="wf-bar-dur" style={ r.DurStyle }>{ r.DurTxt }</span>
+							</div>
+						</div>
+					}
+				</div>
+			</div>
+		</div>
+	}
+}
+
+templ spanPanel(s spanDetail) {
+	<div class="wf-detail">
+		<div class="wf-detail-op" title={ s.Op }>{ s.Op }</div>
+		<div class="wf-detail-meta">
+			<span class="chip" style={ "border-color:" + s.Color }>{ s.Participant }</span>
+			<span>{ s.Kind }</span>
+			if s.Peer != "" {
+				<span>→ { s.Peer }</span>
+			}
+			if s.Error {
+				<span class="badge badge-error">error</span>
+			}
+		</div>
+		<div class="wf-detail-rows">
+			<div class="wf-kv"><span class="wf-k">duration</span><span class="wf-v">{ s.Duration }</span></div>
+			<div class="wf-kv"><span class="wf-k">start +</span><span class="wf-v">{ s.StartOffset }</span></div>
+			<div class="wf-kv"><span class="wf-k">status</span><span class="wf-v">{ s.Status }</span></div>
+		</div>
+		<div class="wf-detail-attrs-title">attributes</div>
+		if len(s.Attrs) == 0 {
+			<div class="muted">no attributes</div>
+		} else {
+			<div class="wf-detail-rows">
+				for _, a := range s.Attrs {
+					<div class="wf-kv">
+						<span class="wf-k" title={ a.K }>{ a.K }</span>
+						<span class="wf-v" title={ a.V }>{ a.V }</span>
+					</div>
+				}
+			</div>
+		}
+	</div>
+}
+
+templ sequenceView(sd seqDiagram) {
+	<div class="seq-container">
+		<div class="seq-scroll">
+			<svg width={ sd.W } height={ sd.H } viewBox={ "0 0 " + sd.W + " " + sd.H } class="seq-svg" id="lp-seq-svg">
+				<defs>
+					<marker id="seq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+						<path d="M 0 0 L 10 5 L 0 10 z" class="seq-arrowhead"></path>
+					</marker>
+					<marker id="seq-arrow-error" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+						<path d="M 0 0 L 10 5 L 0 10 z" class="seq-arrowhead-error"></path>
+					</marker>
+					<marker id="seq-arrow-open" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+						<path d="M 0 0 L 10 5 L 0 10" class="seq-arrowhead-open" fill="none"></path>
+					</marker>
+					<marker id="seq-arrow-open-error" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+						<path d="M 0 0 L 10 5 L 0 10" class="seq-arrowhead-open-error" fill="none"></path>
+					</marker>
+				</defs>
+				for _, p := range sd.Participants {
+					<g>
+						<rect x={ p.RectX } y="10" width="154" height="34" rx="6" class={ p.Class }></rect>
+						<text x={ p.LabelX } y="32" class="seq-participant-label">{ p.Label }</text>
+						<line x1={ p.LabelX } y1={ p.LifeTop } x2={ p.LabelX } y2={ p.LifeBottom } class="seq-lifeline"></line>
+					</g>
+				}
+				for _, a := range sd.Activations {
+					<rect x={ a.X } y={ a.Y } width="10" height={ a.H } rx="2" class={ a.Class } data-span={ a.SpanID } data-href={ a.GroupHref }></rect>
+				}
+				for _, m := range sd.Messages {
+					<g class={ m.Class } data-span={ m.SpanID } data-href={ m.GroupHref }>
+						if m.Title != "" {
+							<title>{ m.Title }</title>
+						}
+						<rect x={ m.HitX } y={ m.HitY } width={ m.HitW } height="46" fill="transparent"></rect>
+						if m.Line {
+							<text x={ m.LabelX } y={ m.LabelY } class={ m.LabelClass } text-anchor={ m.Anchor }>{ m.Label }</text>
+							<line x1={ m.X1 } y1={ m.Y1 } x2={ m.X2 } y2={ m.Y2 } class={ m.LineClass } stroke-dasharray={ m.Dash } marker-end={ m.Marker }></line>
+						} else {
+							<path d={ m.D } class={ m.LineClass } marker-end={ m.Marker } fill="none"></path>
+							<text x={ m.LabelX } y={ m.LabelY } class={ m.LabelClass } text-anchor={ m.Anchor }>{ m.Label }</text>
+						}
+					</g>
+				}
+			</svg>
+		</div>
+	</div>
+}

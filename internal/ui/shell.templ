@@ -1,0 +1,79 @@
+package ui
+
+import "liveprobe/internal/ui/view"
+
+// headerState is the server-rendered starting point of the header; the live stream updates it.
+type headerState struct {
+	Active        string // nav key: live | history | errors | search | alerts
+	Query         string
+	Traces        int
+	Services      int
+	Alerts        int
+	AlertSeverity string
+}
+
+func navClass(active, key string) string {
+	if active == key {
+		return "nav-link nav-link-active"
+	}
+	return "nav-link"
+}
+
+// page is the document shell. stream is the /ui/live subscription for this page.
+templ page(title string, h headerState, stream string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title }</title>
+			<script>
+				// Apply the saved theme before first paint to avoid a flash.
+				try {
+					var t = localStorage.getItem("liveprobe-theme") === "light" ? "light" : "dark";
+					document.documentElement.setAttribute("data-theme", t);
+				} catch (e) {
+					document.documentElement.setAttribute("data-theme", "dark");
+				}
+			</script>
+			<link rel="stylesheet" href={ asset("styles.css") }/>
+			<script src={ asset("live.js") } defer></script>
+		</head>
+		<body>
+			<div id="root">
+				<div class="app" data-stream={ stream }>
+					@header(h)
+					{ children... }
+				</div>
+			</div>
+		</body>
+	</html>
+}
+
+templ header(h headerState) {
+	<header class="header">
+		<div class="header-left">
+			<a href="/" class="logo logo-link">LiveProbe</a>
+			<span id="lp-status" class="status status-offline"><span class="status-dot"></span><span id="lp-status-text">offline</span></span>
+			<nav class="header-nav">
+				<a href="/" class={ navClass(h.Active, "live") }>Live</a>
+				<a href="/history" class={ navClass(h.Active, "history") }>History</a>
+				<a href="/errors" class={ navClass(h.Active, "errors") }>Errors</a>
+				<a href="/search" class={ navClass(h.Active, "search") }>Search</a>
+				<a href="/alerts" class={ navClass(h.Active, "alerts") }>
+					Alerts
+					<span id="lp-alert-badge" class={ "nav-badge nav-badge-" + h.AlertSeverity } hidden?={ h.Alerts == 0 }>{ view.Itoa(h.Alerts) }</span>
+				</a>
+			</nav>
+		</div>
+		<div class="header-right">
+			<form class="header-search" action="/search" method="get">
+				<input class="header-search-input" name="q" placeholder="Search traces…" value={ h.Query }/>
+			</form>
+			<span class="counter"><strong id="lp-trace-count">{ view.Itoa(h.Traces) }</strong> traces</span>
+			<span class="counter"><strong id="lp-service-count">{ view.Itoa(h.Services) }</strong> services</span>
+			<span class="version" title="LiveProbe version">v{ Version }</span>
+			<button type="button" class="theme-toggle" id="lp-theme-toggle" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">☀</button>
+		</div>
+	</header>
+}

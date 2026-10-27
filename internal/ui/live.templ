@@ -1,0 +1,300 @@
+package ui
+
+import (
+	"liveprobe/internal/core"
+	"liveprobe/internal/ui/view"
+	"slices"
+	"strconv"
+)
+
+type liveData struct {
+	Params  liveParams
+	Header  headerState
+	Traces  []core.TraceSummary
+	State   LiveState
+	Flow    flowGraph
+	Matrix  matrixGraph
+}
+
+func traceTouches(t core.TraceSummary, service string) bool {
+	return service == "" || slices.Contains(t.Services, service)
+}
+
+func filterTraces(ts []core.TraceSummary, service string) []core.TraceSummary {
+	out := []core.TraceSummary{}
+	for _, t := range ts {
+		if traceTouches(t, service) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func alertSeverity(alerts []core.FiringAlert) string {
+	for _, a := range alerts {
+		if a.Severity == "error" {
+			return "error"
+		}
+	}
+	return "warn"
+}
+
+func livePage(b Backend, p liveParams) templ.Component {
+	st := b.LiveState()
+	traces := filterTraces(b.RecentTraces(100), p.Service)
+	d := liveData{
+		Params: p,
+		Traces: traces,
+		State:  st,
+		Flow:   buildFlow(st.Topology, p.Service),
+		Matrix: buildMatrix(st.Topology, p),
+		Header: headerState{Active: "live", Traces: len(traces), Services: len(st.Topology.Nodes), Alerts: len(st.Alerts), AlertSeverity: alertSeverity(st.Alerts)},
+	}
+	return livePageView(d)
+}
+
+templ livePageView(d liveData) {
+	@page("LiveProbe", d.Header, d.Params.streamURL()) {
+		@liveBody(d)
+	}
+}
+
+templ liveBody(d liveData) {
+	<div class="body" id="lp-live" data-service={ d.Params.Service } data-view={ d.Params.View }>
+		<aside class="sidebar">
+			<div class="sidebar-header">
+				<div class="sidebar-title">Live traces</div>
+				<button id="lp-pause" class="pause-btn" title="Pause live feed">Pause</button>
+			</div>
+			<div class="trace-list-empty" id="lp-trace-empty" hidden?={ len(d.Traces) > 0 }>
+				if d.Params.Service != "" {
+					No traces touching { d.Params.Service }.
+				} else {
+					No traces yet…
+				}
+			</div>
+			<ul class="trace-list" id="lp-trace-list">
+				for _, t := range d.Traces {
+					@traceRow(t)
+				}
+			</ul>
+		</aside>
+		<main class="main">
+			<div id="lp-red">
+				@redTiles(d.State.Red)
+			</div>
+			<div class="live-toolbar">
+				<span class="live-toolbar-label">Filter</span>
+				<select class="live-filter" id="lp-filter">
+					@filterOptions(d.State.Topology.Nodes, d.Params.Service)
+				</select>
+				if d.Params.Service != "" {
+					<a class="live-filter-clear" href={ templ.SafeURL(d.Params.href(func(c *liveParams) { c.Service = "" })) }>clear ✕</a>
+				}
+				<div class="live-view-toggle" role="group" aria-label="live view">
+					<a class={ segClass(d.Params.View == "graph") } href={ templ.SafeURL(d.Params.href(func(c *liveParams) { c.View = "graph" })) }>Graph</a>
+					<a class={ segClass(d.Params.View == "matrix") } href={ templ.SafeURL(d.Params.href(func(c *liveParams) { c.View = "matrix" })) }>Matrix</a>
+				</div>
+			</div>
+			<div class="tab-panel">
+				if d.Params.View == "matrix" {
+					<div id="lp-matrix">
+						@matrixContent(d.Matrix, d.Params.Metric)
+					</div>
+				} else {
+					@flowPanel(d.Flow, d.State.MermaidFlow)
+				}
+			</div>
+		</main>
+	</div>
+}
+
+func segClass(active bool) string {
+	if active {
+		return "seg-btn seg-btn-active"
+	}
+	return "seg-btn"
+}
+
+templ filterOptions(nodes []string, selected string) {
+	<option value="">all services</option>
+	for _, n := range sortedCopy(nodes) {
+		<option value={ n } selected?={ n == selected }>{ n }</option>
+	}
+}
+
+func sortedCopy(xs []string) []string {
+	out := slices.Clone(xs)
+	slices.Sort(out)
+	return out
+}
+
+templ traceRow(t core.TraceSummary) {
+	<li class="trace-row" data-id={ t.TraceID } data-start={ strconv.FormatInt(t.StartTime, 10) } data-href={ traceHref(t.TraceID) }>
+		<div class="trace-row-top">
+			<span class="trace-op" title={ t.RootOperation }>{ t.RootOperation }</span>
+			if t.HasError {
+				<span class="dot dot-error" title="error"></span>
+			}
+		</div>
+		<div class="trace-row-meta">
+			<span>{ view.Itoa(len(t.Services)) } svc</span>
+			<span>·</span>
+			<span>{ view.Itoa(t.SpanCount) } spans</span>
+			<span>·</span>
+			<span>{ view.Micros(t.DurationMicros) }</span>
+		</div>
+	</li>
+}
+
+func redTitle(m core.RedMetric) string {
+	return m.Service + " — " + view.Itoa(m.Calls) + " calls, " + view.Itoa(m.Errors) + " errors, p95 " + view.Micros(m.P95Micros)
+}
+
+func redErrClass(m core.RedMetric) string {
+	if m.ErrorRate > 0 {
+		return "red-metric red-metric-err"
+	}
+	return "red-metric red-metric-muted"
+}
+
+// redTiles: RED (Rate · Errors · Duration) per instrumented service, sorted by traffic.
+templ redTiles(red []core.RedMetric) {
+	if len(red) > 0 {
+		<div class="red-tiles" role="list">
+			for _, m := range red {
+				if view.IsDatastore(m.Service) {
+					<button role="listitem" class={ "red-tile red-tile-" + string(view.ServiceHealth(m.ErrorRate)) } disabled title={ redTitle(m) }>
+						@redTileBody(m)
+					</button>
+				} else {
+					<button role="listitem" class={ "red-tile red-tile-" + string(view.ServiceHealth(m.ErrorRate)) } data-href={ serviceHref(m.Service) } title={ redTitle(m) }>
+						@redTileBody(m)
+					</button>
+				}
+			}
+		</div>
+	}
+}
+
+templ redTileBody(m core.RedMetric) {
+	<div class="red-tile-name">{ m.Service }</div>
+	<div class="red-tile-metrics">
+		<span class="red-metric" title="request rate">{ view.Rate(m.RatePerSec) }</span>
+		<span class={ redErrClass(m) } title="error rate">{ view.Pct(m.ErrorRate) }</span>
+		<span class="red-metric" title="p95 latency">{ view.Micros(m.P95Micros) }</span>
+	</div>
+}
+
+templ flowPanel(g flowGraph, mermaid string) {
+	<div class="empty-hint" id="lp-flow-empty" hidden?={ !g.Empty }>Waiting for topology… no services observed yet.</div>
+	<div class="flow-fit" id="lp-flow" hidden?={ g.Empty }>
+		<div class="flow-controls">
+			<button class="flow-btn" title="Zoom in" data-zoom="0.83">+</button>
+			<button class="flow-btn" title="Zoom out" data-zoom="1.2">−</button>
+			<button class="flow-btn flow-btn-fit" title="Fit to view" data-fit>Fit</button>
+			<span class="flow-ctrl-sep"></span>
+			<button class="flow-btn flow-btn-fit" title="Copy Mermaid" data-export="mmd">mmd</button>
+			<button class="flow-btn flow-btn-fit" title="Download SVG" data-export="svg">svg</button>
+			<button class="flow-btn flow-btn-fit" title="Download PNG" data-export="png">png</button>
+		</div>
+		<svg id="lp-flow-svg" class="flow-svg" width="100%" height="100%" viewBox={ g.Fit } data-fit={ g.Fit } data-mermaid={ mermaid } preserveAspectRatio="xMidYMid meet">
+			<defs>
+				<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+					<path d="M 0 0 L 10 5 L 0 10 z" class="flow-arrow"></path>
+				</marker>
+				<marker id="arrow-error" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+					<path d="M 0 0 L 10 5 L 0 10 z" class="flow-arrow-error"></path>
+				</marker>
+				<marker id="arrow-warn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+					<path d="M 0 0 L 10 5 L 0 10 z" class="flow-arrow-warn"></path>
+				</marker>
+			</defs>
+			<g id="lp-flow-content">
+				@flowContent(g)
+			</g>
+		</svg>
+		<div class="flow-legend" aria-hidden="true">
+			<span class="flow-legend-item"><span class="flow-legend-swatch flow-legend-ok"></span> healthy</span>
+			<span class="flow-legend-item"><span class="flow-legend-swatch flow-legend-warn"></span> slow</span>
+			<span class="flow-legend-item"><span class="flow-legend-swatch flow-legend-error"></span> errors</span>
+		</div>
+	</div>
+}
+
+// flowContent is the part of the graph the live stream replaces; the <svg> (and so the user's
+// zoom/pan viewBox) stays put.
+templ flowContent(g flowGraph) {
+	<g>
+		for _, e := range g.Edges {
+			<g class="flow-edge-group">
+				<path d={ e.Path } class={ e.Class } stroke-width={ e.Width } marker-end={ e.Marker }></path>
+				<g class="flow-edge-label">
+					<text x={ e.LX } y={ e.LY }>{ e.Label }</text>
+					<text x={ e.LX } y={ e.SubY } class="flow-edge-sublabel">{ e.Sub }</text>
+				</g>
+			</g>
+		}
+	</g>
+	<g>
+		for _, n := range g.Nodes {
+			<g class={ nodeGroupClass(n) } data-href={ n.Href }>
+				<rect x={ n.Left } y={ n.Top } width="132" height="44" rx={ n.Rx } class={ n.Class }></rect>
+				<text x={ n.X } y={ n.LabelY } class={ n.LabelClass }>{ n.Label }</text>
+			</g>
+		}
+	</g>
+}
+
+func nodeGroupClass(n flowNode) string {
+	if n.Href != "" {
+		return "flow-node-group clickable"
+	}
+	return "flow-node-group"
+}
+
+templ matrixContent(m matrixGraph, metric string) {
+	if m.Empty {
+		<div class="empty-hint">No service-to-service calls observed yet.</div>
+	} else {
+		<div class="depmatrix">
+			<div class="depmatrix-toolbar">
+				<span class="depmatrix-caption">Who calls whom · rows call columns</span>
+				<div class="depmatrix-metric" role="group" aria-label="cell metric">
+					for _, mm := range []string{"calls", "errors", "latency"} {
+						<a class={ segClass(metric == mm) } href={ templ.SafeURL(m.MetricLink[mm]) }>{ mm }</a>
+					}
+				</div>
+			</div>
+			<div class="depmatrix-scroll">
+				<svg class="depmatrix-svg" viewBox={ "0 0 " + m.W + " " + m.H } width={ m.W } height={ m.H } preserveAspectRatio="xMinYMin meet">
+					for _, l := range m.ColLabels {
+						<text class={ l.Class } x={ l.X } y={ l.Y } transform={ l.Transform } data-href={ l.Href }>{ l.Text }</text>
+					}
+					for _, l := range m.RowLabels {
+						<text class={ l.Class } x={ l.X } y={ l.Y } text-anchor="end" data-href={ l.Href }>{ l.Text }</text>
+					}
+					for _, c := range m.Cells {
+						if c.Empty {
+							<rect class="depmatrix-empty" x={ c.X } y={ c.Y } width={ c.Size } height={ c.Size } rx="3"></rect>
+						} else {
+							<g class={ c.Class } data-href={ c.Href }>
+								<rect x={ c.X } y={ c.Y } width={ c.Size } height={ c.Size } rx="3" style={ c.Style }></rect>
+								if c.Text != "" {
+									<text x={ c.TextX } y={ c.TextY } class="depmatrix-cell-text">{ c.Text }</text>
+								}
+								<title>{ c.Title }</title>
+							</g>
+						}
+					}
+				</svg>
+			</div>
+			<div class="flow-legend" aria-hidden="true">
+				<span class="flow-legend-item"><span class="flow-legend-swatch flow-legend-ok"></span> healthy</span>
+				<span class="flow-legend-item"><span class="flow-legend-swatch flow-legend-warn"></span> slow</span>
+				<span class="flow-legend-item"><span class="flow-legend-swatch flow-legend-error"></span> errors</span>
+				<span class="flow-legend-item depmatrix-legend-note">darker = more traffic</span>
+			</div>
+		</div>
+	}
+}

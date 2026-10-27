@@ -113,3 +113,31 @@ func SaturatingMicros(x float64) int64 {
 	}
 	return int64(x)
 }
+
+// ToFixed is ECMAScript Number.prototype.toFixed: the exact binary value rounded to `digits`
+// decimals, an exact tie going to the larger magnitude ("1.25"→"1.3" but 1.005→"1.00", because
+// 1.005 is really 1.00499…). |x| >= 1e21 falls back to Number::toString, as in JS.
+func ToFixed(x float64, digits int) string {
+	if math.IsNaN(x) || math.IsInf(x, 0) || math.Abs(x) >= 1e21 {
+		return FormatJSNumber(x)
+	}
+	const prec = 512 // exact: a 53-bit mantissa times 10^digits (digits <= 100) fits easily
+	scaled := new(big.Float).SetPrec(prec).SetFloat64(math.Abs(x))
+	scaled.Mul(scaled, new(big.Float).SetPrec(prec).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(digits)), nil)))
+	n, _ := scaled.Int(nil) // truncates toward zero
+	frac := new(big.Float).SetPrec(prec).Sub(scaled, new(big.Float).SetPrec(prec).SetInt(n))
+	if frac.Cmp(big.NewFloat(0.5)) >= 0 {
+		n.Add(n, big.NewInt(1))
+	}
+	s := n.String()
+	if digits > 0 {
+		if len(s) <= digits {
+			s = strings.Repeat("0", digits-len(s)+1) + s
+		}
+		s = s[:len(s)-digits] + "." + s[len(s)-digits:]
+	}
+	if x < 0 {
+		s = "-" + s // JS keeps the sign even when the result rounds to zero: (-0.0001).toFixed(2) = "-0.00"
+	}
+	return s
+}
